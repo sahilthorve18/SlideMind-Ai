@@ -44,6 +44,7 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
     CHAT_HISTORY_LIMIT = int(os.getenv("CHAT_HISTORY_LIMIT", "20"))
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    BACKEND_URL = os.getenv("BACKEND_URL", os.getenv("RENDER_EXTERNAL_URL", "")).rstrip("/")
     # Fernet key for encrypting Google refresh tokens at rest. REQUIRED in production.
     TOKEN_ENCRYPTION_KEY = os.getenv("TOKEN_ENCRYPTION_KEY", "")
     GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -51,6 +52,11 @@ class Config:
     GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "")
     DEV_LOGIN_ENABLED = os.getenv("DEV_LOGIN_ENABLED", "false" if IS_PROD else "true").lower() in ("true", "1")
     GUEST_MAX_PRESENTATIONS = int(os.getenv("GUEST_MAX_PRESENTATIONS", "3"))
+
+    # Production secure cookie configuration
+    SESSION_COOKIE_SECURE = IS_PROD
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = "None" if IS_PROD else "Lax"
     # Persistent storage configuration (local filesystem / S3 / GCS)
     STORAGE_PROVIDER = os.getenv("STORAGE_PROVIDER", "local")
     STORAGE_LOCAL_DIR = os.getenv("STORAGE_LOCAL_DIR", os.path.join(basedir, "persistent_storage"))

@@ -88,15 +88,23 @@ export function AppProvider({ children }) {
 
   // Finish a Google redirect: the backend puts our session token + the state in the URL fragment.
   const finishGoogleRedirect = () => {
-    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    const hash = window.location.hash.replace(/^#/, '')
+    const params = new URLSearchParams(hash)
     if (!params.has('token') && !params.has('error')) return null
     window.history.replaceState(null, '', window.location.pathname + window.location.search) // scrub token from the URL
     if (params.get('error')) return { error: ERRORS[params.get('error')] || 'Sign-in failed.' }
-    const expected = sessionStorage.getItem('sm_oauth_state')
+    const expected = sessionStorage.getItem('sm_oauth_state') || localStorage.getItem('sm_oauth_state')
     sessionStorage.removeItem('sm_oauth_state')
-    if (!expected || expected !== params.get('state')) return { error: ERRORS.invalid_state } // not started in this browser
-    localStorage.setItem('sm_token', params.get('token'))
-    return { ok: true }
+    localStorage.removeItem('sm_oauth_state')
+    if (expected && params.get('state') && expected !== params.get('state')) {
+      return { error: ERRORS.invalid_state } // not started in this browser or state mismatch
+    }
+    const token = params.get('token')
+    if (token) {
+      localStorage.setItem('sm_token', token)
+      return { ok: true }
+    }
+    return null
   }
 
   useEffect(() => {
@@ -133,6 +141,7 @@ export function AppProvider({ children }) {
   const startGoogle = async () => {
     const { auth_url, state } = await api.googleStart()
     sessionStorage.setItem('sm_oauth_state', state)
+    localStorage.setItem('sm_oauth_state', state)
     window.location.assign(auth_url)
   }
   const disconnectGoogle = async () => setUser(await api.googleDisconnect())
@@ -164,6 +173,9 @@ export function AppProvider({ children }) {
 
   const logout = () => {
     localStorage.removeItem('sm_token')
+    sessionStorage.removeItem('sm_oauth_state')
+    localStorage.removeItem('sm_oauth_state')
+    document.cookie = 'sm_token=; Max-Age=0; path=/;'
     setUser(null)
   }
 

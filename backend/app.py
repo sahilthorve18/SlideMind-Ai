@@ -33,11 +33,41 @@ def create_app(overrides: dict | None = None) -> Flask:
         if rate_store.startswith("memory"):
             logging.warning("RATELIMIT_STORAGE_URI using in-memory store. For multi-worker clusters, configure Redis.")
 
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+    import re
+
+    # Allowed CORS origins: Local dev + exact Vercel frontend URL + configured origins + regex for Vercel preview deploys
+    dev_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5000",
+        "http://127.0.0.1:5000",
+    ]
+    cors_origins = list(dev_origins)
+    frontend_url = (app.config.get("FRONTEND_URL") or "").rstrip("/")
+    if frontend_url and frontend_url not in cors_origins:
+        cors_origins.append(frontend_url)
+    for origin in app.config.get("FRONTEND_ORIGINS", []):
+        o_clean = origin.rstrip("/")
+        if o_clean and o_clean not in cors_origins:
+            cors_origins.append(o_clean)
+
+    # Dynamically match preview deployments on Vercel and Render
+    cors_origins.append(re.compile(r"^https:\/\/[\w\-]+(\.vercel\.app|\.onrender\.com)$"))
+
     CORS(
         app,
-        resources={r"/api/*": {"origins": "*"}},
+        resources={
+            r"/api/*": {"origins": cors_origins},
+            r"/healthz": {"origins": "*"},
+        },
         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        supports_credentials=True,
     )
     db.init_app(app)
     limiter.init_app(app)
@@ -64,6 +94,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         return response
 
+    @app.get("/healthz")
     @app.get("/api/health")
     def health():
         return jsonify({"ok": True, "data": {"status": "healthy"}})

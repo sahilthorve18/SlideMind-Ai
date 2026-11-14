@@ -28,38 +28,66 @@ def google_start():
 @bp.get("/google/callback")
 def google_callback():
     """Google redirects the browser here. We exchange the code server-side, keep Google's tokens
-    (encrypted), and send the browser back with only our own session token in the URL fragment."""
+    (encrypted), and send the browser back with our session token in the URL fragment and secure cookie."""
     if request.args.get("error"):
+        error_type = request.args.get("error")
+        current_app.logger.warning("Google OAuth error from provider: %s", error_type)
         return redirect(google_auth.frontend_redirect(error="google_denied"))
     state, code = request.args.get("state", ""), request.args.get("code", "")
     if not code or not google_auth.verify_state(state):
+        current_app.logger.warning("Google OAuth callback rejected: missing code or invalid state")
         return redirect(google_auth.frontend_redirect(error="invalid_state"))
     try:
         info = google_auth.exchange_code(code)
     except GoogleNotConfigured:
+        current_app.logger.warning("Google OAuth code exchange attempted while unconfigured")
         return redirect(google_auth.frontend_redirect(error="google_not_configured"))
     except GoogleAuthError:
+        current_app.logger.warning("Google OAuth exchange failed")
         return redirect(google_auth.frontend_redirect(error="google_failed"))
-    if not info["email"] or not info["email_verified"]:
+    except Exception as e:
+        current_app.logger.exception("Unexpected error exchanging Google OAuth code: %s", e)
+        return redirect(google_auth.frontend_redirect(error="google_failed"))
+
+    if not info.get("email") or not info.get("email_verified"):
         return redirect(google_auth.frontend_redirect(error="email_unverified"))
 
-    user = User.query.filter_by(google_sub=info["sub"]).first() or User.query.filter_by(email=info["email"]).first()
-    if not user:
-        user = User(email=info["email"])
-        db.session.add(user)
-    user.google_sub = info["sub"]
-    user.name = user.name or info["name"]
-    user.avatar_url = user.avatar_url or info["picture"]
-    google_auth.store_grant(user, info["refresh_token"], info["scopes"])
-    db.session.commit()
-    return redirect(google_auth.frontend_redirect(token=issue_token(user.id), state=state))
+    try:
+        user = User.query.filter_by(google_sub=info["sub"]).first() or User.query.filter_by(email=info["email"]).first()
+        if not user:
+            user = User(email=info["email"])
+            db.session.add(user)
+        user.google_sub = info["sub"]
+        user.name = user.name or info["name"]
+        user.avatar_url = user.avatar_url or info["picture"]
+        google_auth.store_grant(user, info["refresh_token"], info["scopes"])
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Database error persisting Google OAuth user: %s", e)
+        return redirect(google_auth.frontend_redirect(error="google_failed"))
+
+    token = issue_token(user.id)
+    resp = redirect(google_auth.frontend_redirect(token=token, state=state))
+    is_prod = current_app.config.get("ENV_IS_PRODUCTION", False)
+    resp.set_cookie(
+        "sm_token",
+        token,
+        max_age=60 * 60 * 24 * 7,
+        secure=is_prod,
+        httponly=False,
+        samesite="None" if is_prod else "Lax",
+    )
+    return resp
 
 
 @bp.post("/google/disconnect")
 @require_auth
 def google_disconnect():
     google_auth.disconnect(g.user)
-    return ok(_user_dict(g.user))
+    resp, status = ok(_user_dict(g.user))
+    resp.delete_cookie("sm_token")
+    return resp, status
 
 
 @bp.post("/dev-login")

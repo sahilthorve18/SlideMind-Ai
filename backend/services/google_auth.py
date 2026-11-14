@@ -43,9 +43,27 @@ class GoogleAuthExpired(Exception):
     """Stored grant was revoked/expired; the user must reconnect."""
 
 
+def get_redirect_uri() -> str:
+    """Returns the effective Google OAuth redirect URI.
+    Uses explicit GOOGLE_REDIRECT_URI if set, otherwise derives from BACKEND_URL or RENDER_EXTERNAL_URL,
+    falling back to localhost in development.
+    """
+    c = current_app.config
+    explicit = (c.get("GOOGLE_REDIRECT_URI") or "").strip()
+    if explicit:
+        return explicit
+    backend_url = (os.getenv("BACKEND_URL") or os.getenv("RENDER_EXTERNAL_URL") or c.get("BACKEND_URL") or "").strip()
+    if backend_url:
+        return f"{backend_url.rstrip('/')}/api/auth/google/callback"
+    if c.get("ENV", "development") == "development" or c.get("DEV_LOGIN_ENABLED"):
+        return "http://localhost:5000/api/auth/google/callback"
+    return ""
+
+
 def is_configured() -> bool:
     c = current_app.config
-    return bool(c.get("GOOGLE_CLIENT_ID") and c.get("GOOGLE_CLIENT_SECRET") and c.get("GOOGLE_REDIRECT_URI"))
+    redirect_uri = get_redirect_uri()
+    return bool(c.get("GOOGLE_CLIENT_ID") and c.get("GOOGLE_CLIENT_SECRET") and redirect_uri)
 
 
 def _flow(state=None):
@@ -54,10 +72,11 @@ def _flow(state=None):
     if not is_configured():
         raise GoogleNotConfigured("Google sign-in is not configured on this server.")
     c = current_app.config
+    redirect_uri = get_redirect_uri()
     cfg = {"web": {"client_id": c["GOOGLE_CLIENT_ID"], "client_secret": c["GOOGLE_CLIENT_SECRET"],
-                   "auth_uri": AUTH_URI, "token_uri": TOKEN_URI, "redirect_uris": [c["GOOGLE_REDIRECT_URI"]]}}
+                   "auth_uri": AUTH_URI, "token_uri": TOKEN_URI, "redirect_uris": [redirect_uri]}}
     # Confidential server-side client: the client secret authenticates the exchange, so PKCE is not used.
-    return Flow.from_client_config(cfg, scopes=SCOPES, state=state, redirect_uri=c["GOOGLE_REDIRECT_URI"],
+    return Flow.from_client_config(cfg, scopes=SCOPES, state=state, redirect_uri=redirect_uri,
                                    autogenerate_code_verifier=False)
 
 
@@ -149,4 +168,5 @@ def disconnect(user, revoke: bool = True):
 def frontend_redirect(**fragment) -> str:
     """Tokens travel in the URL *fragment*: never sent to servers or written to access logs."""
     frag = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in fragment.items())
-    return f"{current_app.config['FRONTEND_URL']}/#{frag}"
+    base_url = (current_app.config.get("FRONTEND_URL") or "http://localhost:5173").rstrip("/")
+    return f"{base_url}/#{frag}"

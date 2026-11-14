@@ -37,10 +37,16 @@ def require_auth(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         header = request.headers.get("Authorization", "")
-        if not header.startswith("Bearer "):
+        token = None
+        if header.startswith("Bearer "):
+            token = header[7:].strip()
+        elif "sm_token" in request.cookies:
+            token = request.cookies.get("sm_token")
+
+        if not token:
             return fail("unauthorized", "Missing credentials.", 401)
         try:
-            payload = _serializer().loads(header[7:], max_age=TOKEN_MAX_AGE)
+            payload = _serializer().loads(token, max_age=TOKEN_MAX_AGE)
         except (BadSignature, SignatureExpired):
             return fail("unauthorized", "Invalid or expired session.", 401)
         db.session.expire_all()

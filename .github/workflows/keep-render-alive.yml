@@ -1,0 +1,64 @@
+name: Keep Render Backend Awake
+
+on:
+  schedule:
+    # Run every 10 minutes to mitigate Render free-tier inactivity spin-down
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Enable manual triggers for on-demand verification
+
+# Prevent overlapping workflow runs if a previous run is still waiting on retries
+concurrency:
+  group: keep-render-alive
+  cancel-in-progress: false
+
+jobs:
+  ping-health:
+    name: Ping Render Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify Secret Configuration
+        env:
+          RENDER_BACKEND_URL: ${{ secrets.RENDER_BACKEND_URL }}
+        run: |
+          if [ -z "$RENDER_BACKEND_URL" ]; then
+            echo "::error::Secret RENDER_BACKEND_URL is not configured in repository secrets."
+            echo "Please navigate to: GitHub Repository -> Settings -> Secrets and variables -> Actions"
+            echo "and create a secret named RENDER_BACKEND_URL with your Render backend URL (e.g. https://slidemind-backend.onrender.com)."
+            exit 1
+          fi
+
+      - name: Send Health Check Ping
+        env:
+          RENDER_BACKEND_URL: ${{ secrets.RENDER_BACKEND_URL }}
+        run: |
+          # Strip trailing slash from base URL
+          CLEAN_URL="${RENDER_BACKEND_URL%/}"
+          ENDPOINT="${CLEAN_URL}/api/health"
+          echo "=================================================="
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Target endpoint: ${ENDPOINT}"
+          echo "=================================================="
+
+          # Ping backend with timeout and retries (Render cold start can take 30-50s)
+          HTTP_STATUS=$(curl -s -S -o response_body.txt -w "%{http_code}" \
+            --connect-timeout 20 \
+            --max-time 60 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            "${ENDPOINT}")
+
+          echo "HTTP Status Code: ${HTTP_STATUS}"
+          echo "Response Body:"
+          cat response_body.txt || true
+          echo ""
+
+          if [ "${HTTP_STATUS}" -eq 200 ]; then
+            echo "SUCCESS: Backend responded with HTTP 200 OK. Instance is awake and healthy."
+            exit 0
+          else
+            echo "::error::Health check failed! Expected HTTP 200, received HTTP ${HTTP_STATUS}."
+            exit 1
+          fi
