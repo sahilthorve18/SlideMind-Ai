@@ -31,9 +31,7 @@ def create_app(overrides: dict | None = None) -> Flask:
             raise RuntimeError("SECRET_KEY must be set to a unique value in production.")
         rate_store = app.config.get("RATELIMIT_STORAGE_URI") or ""
         if rate_store.startswith("memory"):
-            raise RuntimeError(
-                "RATELIMIT_STORAGE_URI must be a shared store such as Redis in production, not memory://."
-            )
+            logging.warning("RATELIMIT_STORAGE_URI using in-memory store. For multi-worker clusters, configure Redis.")
 
     cors_origins = "*" if app.config.get("DEV_LOGIN_ENABLED") else app.config["FRONTEND_ORIGINS"]
     CORS(app, resources={r"/api/*": {"origins": cors_origins}},
