@@ -110,6 +110,15 @@ def authorization_url() -> tuple[str, str]:
     return url, state
 
 
+def _mask_secret(val: str) -> str:
+    if not val:
+        return "<EMPTY>"
+    val = val.strip().strip("\"'")
+    if len(val) <= 8:
+        return f"{val[:2]}*** (len {len(val)})"
+    return f"{val[:4]}...{val[-4:]} (len {len(val)})"
+
+
 def exchange_code(code: str) -> dict:
     """Server-side code exchange with dual verification: ID token verification with graceful
     fallback to the authoritative Google UserInfo API. Returns profile + refresh token + granted scopes."""
@@ -117,10 +126,17 @@ def exchange_code(code: str) -> dict:
     from google.oauth2 import id_token
 
     flow = _flow()
-    client_id = (current_app.config.get("GOOGLE_CLIENT_ID") or "").strip().strip("\"'")
+    c = current_app.config
+    client_id = (c.get("GOOGLE_CLIENT_ID") or "").strip().strip("\"'")
+    client_secret = (c.get("GOOGLE_CLIENT_SECRET") or "").strip().strip("\"'")
     try:
         flow.fetch_token(code=code)
     except Exception as e:
+        err_str = str(e)
+        if "invalid_client" in err_str or "client secret" in err_str.lower():
+            hint = f"GOOGLE_CLIENT_SECRET in Render ({_mask_secret(client_secret)}) is invalid for Client ID {_mask_secret(client_id)}. Update GOOGLE_CLIENT_SECRET in Render Environment with the secret from Google Cloud Console."
+            current_app.logger.error("OAuth client secret mismatch: %s. %s", e, hint)
+            raise GoogleAuthError(hint) from e
         current_app.logger.warning("Google flow.fetch_token failed: %s: %s", type(e).__name__, e)
         raise GoogleAuthError(f"Token exchange failed ({type(e).__name__}): {e}") from e
 
