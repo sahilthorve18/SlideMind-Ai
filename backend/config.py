@@ -14,7 +14,7 @@ def _db_url() -> str:
         return "sqlite:///slidemind_dev.sqlite3"
     # Render/Heroku style URLs use the legacy scheme.
     if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+        url = url.replace("postgres://", "postgresql://", 1)
     return url
 
 
