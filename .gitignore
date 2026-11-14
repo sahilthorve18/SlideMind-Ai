@@ -41,3 +41,4 @@ Thumbs.db
 removed/
 output/
 exporter_old_backup.py.txt
+frontend/.vite/
