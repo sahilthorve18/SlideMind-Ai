@@ -110,13 +110,14 @@ def exchange_code(code: str) -> dict:
     from google.oauth2 import id_token
 
     flow = _flow()
+    client_id = (current_app.config.get("GOOGLE_CLIENT_ID") or "").strip()
     try:
         flow.fetch_token(code=code)
         creds = flow.credentials
-        info = id_token.verify_oauth2_token(creds.id_token, g_requests.Request(), current_app.config["GOOGLE_CLIENT_ID"])
+        info = id_token.verify_oauth2_token(creds.id_token, g_requests.Request(), client_id)
     except Exception as e:
-        current_app.logger.warning("Google code exchange failed: %s", type(e).__name__)
-        raise GoogleAuthError("Google sign-in failed. Please try again.") from e
+        current_app.logger.warning("Google code exchange failed: %s: %s", type(e).__name__, e)
+        raise GoogleAuthError(f"Google sign-in failed: {e}") from e
     granted = flow.oauth2session.token.get("scope") or creds.scopes or []
     if isinstance(granted, str):
         granted = granted.split()
