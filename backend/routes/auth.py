@@ -42,30 +42,45 @@ def google_callback():
     except GoogleNotConfigured:
         current_app.logger.warning("Google OAuth code exchange attempted while unconfigured")
         return redirect(google_auth.frontend_redirect(error="google_not_configured"))
-    except GoogleAuthError:
-        current_app.logger.warning("Google OAuth exchange failed")
-        return redirect(google_auth.frontend_redirect(error="google_failed"))
+    except GoogleAuthError as e:
+        current_app.logger.warning("Google OAuth exchange failed: %s", e)
+        return redirect(google_auth.frontend_redirect(error="google_failed", detail=str(e)))
     except Exception as e:
         current_app.logger.exception("Unexpected error exchanging Google OAuth code: %s", e)
-        return redirect(google_auth.frontend_redirect(error="google_failed"))
+        return redirect(google_auth.frontend_redirect(error="google_failed", detail=str(e)))
 
     if not info.get("email") or not info.get("email_verified"):
         return redirect(google_auth.frontend_redirect(error="email_unverified"))
 
     try:
-        user = User.query.filter_by(google_sub=info["sub"]).first() or User.query.filter_by(email=info["email"]).first()
-        if not user:
+        user_by_sub = User.query.filter_by(google_sub=info["sub"]).first() if info.get("sub") else None
+        user_by_email = User.query.filter_by(email=info["email"]).first() if info.get("email") else None
+
+        if user_by_sub and user_by_email and user_by_sub.id != user_by_email.id:
+            # Reassign google_sub to primary email account to avoid unique constraint collision
+            user_by_sub.google_sub = None
+            db.session.flush()
+            user = user_by_email
+        elif user_by_sub:
+            user = user_by_sub
+        elif user_by_email:
+            user = user_by_email
+        else:
             user = User(email=info["email"])
             db.session.add(user)
+
+        user.email = info["email"]
         user.google_sub = info["sub"]
-        user.name = user.name or info["name"]
-        user.avatar_url = user.avatar_url or info["picture"]
-        google_auth.store_grant(user, info["refresh_token"], info["scopes"])
+        if not user.name and info.get("name"):
+            user.name = str(info["name"])[:255]
+        if not user.avatar_url and info.get("picture"):
+            user.avatar_url = str(info["picture"])[:512]
+        google_auth.store_grant(user, info.get("refresh_token"), info.get("scopes", []))
         db.session.commit()
     except Exception as e:
         db.session.rollback()
         current_app.logger.exception("Database error persisting Google OAuth user: %s", e)
-        return redirect(google_auth.frontend_redirect(error="google_failed"))
+        return redirect(google_auth.frontend_redirect(error="google_failed", detail="Database user persistence error"))
 
     token = issue_token(user.id)
     resp = redirect(google_auth.frontend_redirect(token=token, state=state))

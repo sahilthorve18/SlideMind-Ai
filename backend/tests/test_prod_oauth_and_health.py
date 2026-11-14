@@ -157,3 +157,73 @@ def test_auth_via_cookie_when_bearer_header_absent(app):
         assert res_with_cookie.status_code == 200
         data = res_with_cookie.get_json()["data"]
         assert data["email"] == "cookie_user@example.com"
+
+
+def test_google_callback_merges_existing_user_cleanly(app, monkeypatch):
+    """If user already exists by email, callback must update google_sub without DB crash."""
+    with app.app_context():
+        existing = User(email="existing@example.com", name="Existing User")
+        db.session.add(existing)
+        db.session.commit()
+
+    mock_info = {
+        "sub": "google-user-999",
+        "email": "existing@example.com",
+        "email_verified": True,
+        "name": "Updated Google Name",
+        "picture": "https://lh3.googleusercontent.com/avatar.jpg",
+        "refresh_token": "mock-refresh-token",
+        "scopes": sorted(SCOPES),
+    }
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code: mock_info)
+
+    with app.test_client() as c:
+        start_res = c.post("/api/auth/google").get_json()["data"]
+        state = start_res["state"]
+
+        res = c.get(f"/api/auth/google/callback?code=mock_code&state={state}")
+        assert res.status_code == 302
+        assert "token=" in res.headers["Location"]
+
+    with app.app_context():
+        u = User.query.filter_by(email="existing@example.com").first()
+        assert u is not None
+        assert u.google_sub == "google-user-999"
+
+
+def test_exchange_code_falls_back_to_userinfo_when_id_token_fails(app, monkeypatch):
+    """When ID token verification fails, exchange_code must transparently fetch from Google UserInfo."""
+    class FakeSession:
+        token = {"access_token": "mock-access-token", "scope": "openid email"}
+        def get(self, url, timeout=None):
+            class FakeResp:
+                ok = True
+                status_code = 200
+                def json(self):
+                    return {
+                        "sub": "userinfo-sub-456",
+                        "email": "userinfo@example.com",
+                        "email_verified": True,
+                        "name": "UserInfo User",
+                        "picture": "https://example.com/pic.png",
+                    }
+            return FakeResp()
+
+    class FakeCreds:
+        id_token = "invalid-corrupted-jwt"
+        refresh_token = "mock-refresh"
+        scopes = ["openid", "email"]
+
+    class FakeFlow:
+        oauth2session = FakeSession()
+        credentials = FakeCreds()
+        def fetch_token(self, code):
+            pass
+
+    monkeypatch.setattr(google_auth, "_flow", lambda state=None: FakeFlow())
+
+    with app.app_context():
+        info = google_auth.exchange_code("test_code")
+        assert info["sub"] == "userinfo-sub-456"
+        assert info["email"] == "userinfo@example.com"
+        assert info["name"] == "UserInfo User"

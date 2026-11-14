@@ -92,7 +92,11 @@ export function AppProvider({ children }) {
     const params = new URLSearchParams(hash)
     if (!params.has('token') && !params.has('error')) return null
     window.history.replaceState(null, '', window.location.pathname + window.location.search) // scrub token from the URL
-    if (params.get('error')) return { error: ERRORS[params.get('error')] || 'Sign-in failed.' }
+    if (params.get('error')) {
+      const detail = params.get('detail')
+      const baseMsg = ERRORS[params.get('error')] || 'Sign-in failed.'
+      return { error: detail ? `${baseMsg} (${detail})` : baseMsg }
+    }
     const expected = sessionStorage.getItem('sm_oauth_state') || localStorage.getItem('sm_oauth_state')
     sessionStorage.removeItem('sm_oauth_state')
     localStorage.removeItem('sm_oauth_state')
