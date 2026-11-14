@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: slidemind
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://postgres:password@db:5432/slidemind
+      FLASK_ENV: production
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+      FRONTEND_URL: http://localhost:5173
+      FRONTEND_ORIGINS: http://localhost:5173
+    depends_on:
+      - db
+
+volumes:
+  pgdata:

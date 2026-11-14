@@ -1,0 +1,43 @@
+# Environments and secrets
+.env
+.env.*
+*.env
+backend/.env
+frontend/.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+*.sqlite3
+backend/*.sqlite3
+backend/instance/
+backend/persistent_storage/
+instance/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.npm
+.eslintcache
+
+# Logs & OS
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+.pytest_cache/
+.kiro/
+removed/
+output/
+exporter_old_backup.py.txt
