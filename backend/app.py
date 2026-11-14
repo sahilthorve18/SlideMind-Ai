@@ -33,9 +33,12 @@ def create_app(overrides: dict | None = None) -> Flask:
         if rate_store.startswith("memory"):
             logging.warning("RATELIMIT_STORAGE_URI using in-memory store. For multi-worker clusters, configure Redis.")
 
-    cors_origins = "*" if app.config.get("DEV_LOGIN_ENABLED") else app.config["FRONTEND_ORIGINS"]
-    CORS(app, resources={r"/api/*": {"origins": cors_origins}},
-         allow_headers=["Content-Type", "Authorization"])
+    CORS(
+        app,
+        resources={r"/api/*": {"origins": "*"}},
+        allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    )
     db.init_app(app)
     limiter.init_app(app)
     limiter.default_limits = [app.config["RATELIMIT_DEFAULT"]]
