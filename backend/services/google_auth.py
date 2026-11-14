@@ -45,16 +45,23 @@ class GoogleAuthExpired(Exception):
     """Stored grant was revoked/expired; the user must reconnect."""
 
 
+def _clean_str(val: str | None) -> str:
+    """Strips all leading/trailing whitespace, internal newlines/carriage returns, and quotes."""
+    if not val:
+        return ""
+    return "".join(str(val).split()).strip("\"'")
+
+
 def get_redirect_uri() -> str:
     """Returns the effective Google OAuth redirect URI.
     Uses explicit GOOGLE_REDIRECT_URI if set, otherwise derives from BACKEND_URL or RENDER_EXTERNAL_URL,
     falling back to localhost in development.
     """
     c = current_app.config
-    explicit = (c.get("GOOGLE_REDIRECT_URI") or "").strip().strip("\"'")
+    explicit = _clean_str(c.get("GOOGLE_REDIRECT_URI"))
     if explicit:
         return explicit
-    backend_url = (os.getenv("BACKEND_URL") or os.getenv("RENDER_EXTERNAL_URL") or c.get("BACKEND_URL") or "").strip().strip("\"'")
+    backend_url = _clean_str(os.getenv("BACKEND_URL") or os.getenv("RENDER_EXTERNAL_URL") or c.get("BACKEND_URL"))
     if backend_url:
         return f"{backend_url.rstrip('/')}/api/auth/google/callback"
     if c.get("ENV", "development") == "development" or c.get("DEV_LOGIN_ENABLED"):
@@ -65,8 +72,8 @@ def get_redirect_uri() -> str:
 def is_configured() -> bool:
     c = current_app.config
     redirect_uri = get_redirect_uri()
-    client_id = (c.get("GOOGLE_CLIENT_ID") or "").strip().strip("\"'")
-    client_secret = (c.get("GOOGLE_CLIENT_SECRET") or "").strip().strip("\"'")
+    client_id = _clean_str(c.get("GOOGLE_CLIENT_ID"))
+    client_secret = _clean_str(c.get("GOOGLE_CLIENT_SECRET"))
     return bool(client_id and client_secret and redirect_uri)
 
 
@@ -77,8 +84,8 @@ def _flow(state=None):
         raise GoogleNotConfigured("Google sign-in is not configured on this server.")
     c = current_app.config
     redirect_uri = get_redirect_uri()
-    client_id = (c.get("GOOGLE_CLIENT_ID") or "").strip().strip("\"'")
-    client_secret = (c.get("GOOGLE_CLIENT_SECRET") or "").strip().strip("\"'")
+    client_id = _clean_str(c.get("GOOGLE_CLIENT_ID"))
+    client_secret = _clean_str(c.get("GOOGLE_CLIENT_SECRET"))
     cfg = {"web": {"client_id": client_id, "client_secret": client_secret,
                    "auth_uri": AUTH_URI, "token_uri": TOKEN_URI, "redirect_uris": [redirect_uri]}}
     # Confidential server-side client: the client secret authenticates the exchange, so PKCE is not used.
@@ -113,7 +120,7 @@ def authorization_url() -> tuple[str, str]:
 def _mask_secret(val: str) -> str:
     if not val:
         return "<EMPTY>"
-    val = val.strip().strip("\"'")
+    val = _clean_str(val)
     if len(val) <= 8:
         return f"{val[:2]}*** (len {len(val)})"
     return f"{val[:4]}...{val[-4:]} (len {len(val)})"
@@ -127,8 +134,8 @@ def exchange_code(code: str) -> dict:
 
     flow = _flow()
     c = current_app.config
-    client_id = (c.get("GOOGLE_CLIENT_ID") or "").strip().strip("\"'")
-    client_secret = (c.get("GOOGLE_CLIENT_SECRET") or "").strip().strip("\"'")
+    client_id = _clean_str(c.get("GOOGLE_CLIENT_ID"))
+    client_secret = _clean_str(c.get("GOOGLE_CLIENT_SECRET"))
     try:
         flow.fetch_token(code=code)
     except Exception as e:
@@ -215,8 +222,8 @@ def credentials_for(user):
     if not refresh:
         return None
     c = current_app.config
-    client_id = (c.get("GOOGLE_CLIENT_ID") or "").strip().strip("\"'")
-    client_secret = (c.get("GOOGLE_CLIENT_SECRET") or "").strip().strip("\"'")
+    client_id = _clean_str(c.get("GOOGLE_CLIENT_ID"))
+    client_secret = _clean_str(c.get("GOOGLE_CLIENT_SECRET"))
     return Credentials(token=None, refresh_token=refresh, token_uri=TOKEN_URI, client_id=client_id,
                        client_secret=client_secret, scopes=(user.google_scopes or "").split())
 
@@ -238,5 +245,5 @@ def disconnect(user, revoke: bool = True):
 def frontend_redirect(**fragment) -> str:
     """Tokens travel in the URL *fragment*: never sent to servers or written to access logs."""
     frag = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in fragment.items())
-    base_url = (current_app.config.get("FRONTEND_URL") or "http://localhost:5173").strip().strip("\"'").rstrip("/")
+    base_url = _clean_str(current_app.config.get("FRONTEND_URL") or "http://localhost:5173").rstrip("/")
     return f"{base_url}/#{frag}"
