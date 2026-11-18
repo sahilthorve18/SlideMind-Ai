@@ -18,8 +18,10 @@ def _user_dict(u: User):
 @bp.post("/google")
 def google_start():
     """Returns the Google consent URL. The browser stores `state` and compares it when it comes back."""
+    data = request.get_json(silent=True) or {}
+    return_to = data.get("return_to") or request.headers.get("Origin") or request.headers.get("Referer")
     try:
-        url, state = google_auth.authorization_url()
+        url, state = google_auth.authorization_url(return_to=return_to)
     except GoogleNotConfigured:
         return fail("google_not_configured", "Google sign-in is not configured on this server.", 503)
     return ok({"auth_url": url, "state": state})
@@ -29,28 +31,31 @@ def google_start():
 def google_callback():
     """Google redirects the browser here. We exchange the code server-side, keep Google's tokens
     (encrypted), and send the browser back with our session token in the URL fragment and secure cookie."""
+    state, code = request.args.get("state", ""), request.args.get("code", "")
+    return_to = google_auth.get_state_return_to(state)
+
     if request.args.get("error"):
         error_type = request.args.get("error")
         current_app.logger.warning("Google OAuth error from provider: %s", error_type)
-        return redirect(google_auth.frontend_redirect(error="google_denied"))
-    state, code = request.args.get("state", ""), request.args.get("code", "")
+        return redirect(google_auth.frontend_redirect(return_to=return_to, error="google_denied"))
+
     if not code or not google_auth.verify_state(state):
         current_app.logger.warning("Google OAuth callback rejected: missing code or invalid state")
-        return redirect(google_auth.frontend_redirect(error="invalid_state"))
+        return redirect(google_auth.frontend_redirect(return_to=return_to, error="invalid_state"))
     try:
         info = google_auth.exchange_code(code)
     except GoogleNotConfigured:
         current_app.logger.warning("Google OAuth code exchange attempted while unconfigured")
-        return redirect(google_auth.frontend_redirect(error="google_not_configured"))
+        return redirect(google_auth.frontend_redirect(return_to=return_to, error="google_not_configured"))
     except GoogleAuthError as e:
         current_app.logger.warning("Google OAuth exchange failed: %s", e)
-        return redirect(google_auth.frontend_redirect(error="google_failed", detail=str(e)))
+        return redirect(google_auth.frontend_redirect(return_to=return_to, error="google_failed", detail=str(e)))
     except Exception as e:
         current_app.logger.exception("Unexpected error exchanging Google OAuth code: %s", e)
-        return redirect(google_auth.frontend_redirect(error="google_failed", detail=str(e)))
+        return redirect(google_auth.frontend_redirect(return_to=return_to, error="google_failed", detail=str(e)))
 
     if not info.get("email") or not info.get("email_verified"):
-        return redirect(google_auth.frontend_redirect(error="email_unverified"))
+        return redirect(google_auth.frontend_redirect(return_to=return_to, error="email_unverified"))
 
     try:
         user_by_sub = User.query.filter_by(google_sub=info["sub"]).first() if info.get("sub") else None
@@ -80,10 +85,10 @@ def google_callback():
     except Exception as e:
         db.session.rollback()
         current_app.logger.exception("Database error persisting Google OAuth user: %s", e)
-        return redirect(google_auth.frontend_redirect(error="google_failed", detail="Database user persistence error"))
+        return redirect(google_auth.frontend_redirect(return_to=return_to, error="google_failed", detail="Database user persistence error"))
 
     token = issue_token(user.id)
-    resp = redirect(google_auth.frontend_redirect(token=token, state=state))
+    resp = redirect(google_auth.frontend_redirect(return_to=return_to, token=token, state=state))
     is_prod = current_app.config.get("ENV_IS_PRODUCTION", False)
     resp.set_cookie(
         "sm_token",

@@ -2,8 +2,8 @@ name: Keep Render Backend Awake
 
 on:
   schedule:
-    # Run every 10 minutes to mitigate Render free-tier inactivity spin-down
-    - cron: '*/10 * * * *'
+    # Run every 5 minutes to stay ahead of Render's 15-minute free-tier inactivity spin-down
+    - cron: '*/5 * * * *'
   workflow_dispatch: # Enable manual triggers for on-demand verification
 
 # Prevent overlapping workflow runs if a previous run is still waiting on retries
@@ -18,33 +18,31 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Verify Secret Configuration
+      - name: Resolve Target Backend URL
+        id: resolve-url
         env:
-          RENDER_BACKEND_URL: ${{ secrets.RENDER_BACKEND_URL }}
+          INPUT_URL: ${{ secrets.RENDER_BACKEND_URL || vars.RENDER_BACKEND_URL || 'https://slidemind-ai-backend.onrender.com' }}
         run: |
-          if [ -z "$RENDER_BACKEND_URL" ]; then
-            echo "::error::Secret RENDER_BACKEND_URL is not configured in repository secrets."
-            echo "Please navigate to: GitHub Repository -> Settings -> Secrets and variables -> Actions"
-            echo "and create a secret named RENDER_BACKEND_URL with your Render backend URL (e.g. https://slidemind-backend.onrender.com)."
+          TARGET_URL="${INPUT_URL%/}"
+          if [ -z "$TARGET_URL" ]; then
+            echo "::error::Target backend URL is empty."
             exit 1
           fi
+          echo "TARGET_URL=${TARGET_URL}" >> $GITHUB_ENV
+          echo "Keep-alive target configured: ${TARGET_URL}"
 
       - name: Send Health Check Ping
-        env:
-          RENDER_BACKEND_URL: ${{ secrets.RENDER_BACKEND_URL }}
         run: |
-          # Strip trailing slash from base URL
-          CLEAN_URL="${RENDER_BACKEND_URL%/}"
-          ENDPOINT="${CLEAN_URL}/api/health"
+          ENDPOINT="${TARGET_URL}/api/health"
           echo "=================================================="
           echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "Target endpoint: ${ENDPOINT}"
           echo "=================================================="
 
           # Ping backend with timeout and retries (Render cold start can take 30-50s)
-          HTTP_STATUS=$(curl -s -S -o response_body.txt -w "%{http_code}" \
-            --connect-timeout 20 \
-            --max-time 60 \
+          HTTP_STATUS=$(curl -s -S -A "SlideMindKeepAlive/1.0" -o response_body.txt -w "%{http_code}" \
+            --connect-timeout 25 \
+            --max-time 90 \
             --retry 3 \
             --retry-delay 5 \
             --retry-connrefused \

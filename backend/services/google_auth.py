@@ -95,12 +95,34 @@ def _flow(state=None):
 
 # ---- CSRF state: signed, short-lived; the browser also keeps a copy and checks it on return ----
 
+def is_safe_return_url(url: str | None) -> bool:
+    """Validates if return_to belongs to known dev origins, Vercel preview/production, or configured FRONTEND_URL."""
+    if not url:
+        return False
+    import re
+    clean = _clean_str(url).rstrip("/")
+    if clean in ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"):
+        return True
+    cfg_frontend = _clean_str(current_app.config.get("FRONTEND_URL")).rstrip("/")
+    if cfg_frontend and clean == cfg_frontend:
+        return True
+    for origin in current_app.config.get("FRONTEND_ORIGINS", []):
+        if clean == _clean_str(origin).rstrip("/"):
+            return True
+    if re.match(r"^https:\/\/[\w\-]+(\.vercel\.app|\.onrender\.com)$", clean):
+        return True
+    return False
+
+
 def _state_serializer():
     return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="slidemind-oauth-state")
 
 
-def new_state() -> str:
-    return _state_serializer().dumps({"n": secrets.token_urlsafe(16)})
+def new_state(return_to: str | None = None) -> str:
+    payload = {"n": secrets.token_urlsafe(16)}
+    if return_to and is_safe_return_url(return_to):
+        payload["r"] = _clean_str(return_to).rstrip("/")
+    return _state_serializer().dumps(payload)
 
 
 def verify_state(state: str) -> bool:
@@ -111,8 +133,20 @@ def verify_state(state: str) -> bool:
         return False
 
 
-def authorization_url() -> tuple[str, str]:
-    state = new_state()
+def get_state_return_to(state: str) -> str | None:
+    try:
+        data = _state_serializer().loads(state or "", max_age=STATE_MAX_AGE)
+        if isinstance(data, dict):
+            r = data.get("r")
+            if is_safe_return_url(r):
+                return r
+    except Exception:
+        pass
+    return None
+
+
+def authorization_url(return_to: str | None = None) -> tuple[str, str]:
+    state = new_state(return_to=return_to)
     url, _ = _flow().authorization_url(access_type="offline", prompt="consent", include_granted_scopes="true", state=state)
     return url, state
 
@@ -242,8 +276,12 @@ def disconnect(user, revoke: bool = True):
     db.session.commit()
 
 
-def frontend_redirect(**fragment) -> str:
+def frontend_redirect(return_to: str | None = None, **fragment) -> str:
     """Tokens travel in the URL *fragment*: never sent to servers or written to access logs."""
     frag = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in fragment.items())
-    base_url = _clean_str(current_app.config.get("FRONTEND_URL") or "http://localhost:5173").rstrip("/")
+    base_url = None
+    if return_to and is_safe_return_url(return_to):
+        base_url = _clean_str(return_to).rstrip("/")
+    if not base_url:
+        base_url = _clean_str(current_app.config.get("FRONTEND_URL") or "http://localhost:5173").rstrip("/")
     return f"{base_url}/#{frag}"

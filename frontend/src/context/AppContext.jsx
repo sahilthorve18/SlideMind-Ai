@@ -143,7 +143,7 @@ export function AppProvider({ children }) {
   }, [])
 
   const startGoogle = async () => {
-    const { auth_url, state } = await api.googleStart()
+    const { auth_url, state } = await api.googleStart(window.location.origin)
     sessionStorage.setItem('sm_oauth_state', state)
     localStorage.setItem('sm_oauth_state', state)
     window.location.assign(auth_url)

@@ -119,6 +119,28 @@ def test_google_callback_success_sets_cookie_and_redirects(app, monkeypatch):
         assert "sm_token=" in set_cookie
 
 
+def test_google_callback_with_dynamic_return_to(app, monkeypatch):
+    """Callback redirects to origin specified in return_to when present and safe."""
+    mock_info = {
+        "sub": "google-user-custom-return",
+        "email": "dynamic@example.com",
+        "email_verified": True,
+        "name": "Dynamic Return User",
+        "picture": "https://lh3.googleusercontent.com/photo.jpg",
+        "refresh_token": "mock-refresh-token",
+        "scopes": sorted(SCOPES),
+    }
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code: mock_info)
+
+    with app.test_client() as c:
+        start_res = c.post("/api/auth/google", json={"return_to": "https://slide-mind-ai-delta.vercel.app"}).get_json()["data"]
+        state = start_res["state"]
+
+        res = c.get(f"/api/auth/google/callback?code=mock_code&state={state}")
+        assert res.status_code == 302
+        assert res.headers["Location"].startswith("https://slide-mind-ai-delta.vercel.app/#")
+
+
 def test_google_callback_gracefully_handles_errors(app):
     """Failed, cancelled, or expired OAuth attempts must redirect gracefully without crashing."""
     with app.test_client() as c:
