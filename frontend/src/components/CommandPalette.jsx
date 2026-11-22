@@ -24,6 +24,7 @@ export default function CommandPalette() {
     setCommandPaletteOpen,
     updatePreferences,
     toast,
+    user,
   } = useApp()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
@@ -56,14 +57,19 @@ export default function CommandPalette() {
       setSelectedIndex(0)
       requestAnimationFrame(() => inputRef.current?.focus())
 
-      // Fetch user recent presentations & chats
-      api.presentations()
-        .then((data) => setRecentPresentations(Array.isArray(data) ? data.slice(0, 5) : []))
-        .catch(() => setRecentPresentations([]))
+      // Fetch user recent presentations & chats if authenticated
+      if (user) {
+        api.presentations()
+          .then((data) => setRecentPresentations(Array.isArray(data) ? data.slice(0, 5) : []))
+          .catch(() => setRecentPresentations([]))
 
-      api.history()
-        .then((data) => setRecentChats(Array.isArray(data) ? data.slice(0, 5) : []))
-        .catch(() => setRecentChats([]))
+        api.history()
+          .then((data) => setRecentChats(Array.isArray(data) ? data.slice(0, 5) : []))
+          .catch(() => setRecentChats([]))
+      } else {
+        setRecentPresentations([])
+        setRecentChats([])
+      }
     }
   }, [commandPaletteOpen])
 

@@ -12,7 +12,7 @@ bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 
 def _user_dict(u: User):
     return {"id": u.id, "email": u.email, "name": u.name, "avatar_url": u.avatar_url,
-            "google_connected": google_auth.is_connected(u)}
+            "google_connected": google_auth.is_connected(u), "is_guest": getattr(u, "is_guest", False)}
 
 
 @bp.post("/google")

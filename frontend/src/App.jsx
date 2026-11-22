@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 import FloatingNavigation from './components/FloatingNavigation'
 import DocumentsPanel from './components/DocumentsPanel'
 import SettingsModal from './components/SettingsModal'
+import AuthModal from './components/AuthModal'
 import Toasts from './components/Toasts'
 import CommandPalette from './components/CommandPalette'
 import AmbientParticles from './components/AmbientParticles'
@@ -25,12 +26,11 @@ function viewFromPath(path) {
 }
 
 export default function App() {
-  const { user, authReady, toast } = useApp()
+  const { user, authReady, toast, authModalOpen, openAuthModal, closeAuthModal } = useApp()
   const navigate = useNavigate()
   const location = useLocation()
   const [docsOpen, setDocsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [showLoginModal, setShowLoginModal] = useState(false)
   const [editing, setEditing] = useState(null)
 
   const refreshHistory = useCallback(() => {
@@ -42,7 +42,7 @@ export default function App() {
   }, [user, refreshHistory])
 
   const openDocuments = () => {
-    if (!user) setShowLoginModal(true)
+    if (!user) openAuthModal({ message: 'Sign in to access reference documents.' })
     else setDocsOpen(true)
   }
 
@@ -57,22 +57,6 @@ export default function App() {
 
   if (!authReady) return null
 
-  if (showLoginModal) {
-    return (
-      <>
-        <Login
-          onCancel={() => {
-            setShowLoginModal(false)
-          }}
-          onSuccess={() => {
-            setShowLoginModal(false)
-          }}
-        />
-        <Toasts />
-      </>
-    )
-  }
-
   return (
     <>
       <div className="min-h-screen bg-[#101114] text-[#F4E6D3] overflow-x-hidden selection:bg-[#F28C28]/30 selection:text-[#F4E6D3] relative">
@@ -84,10 +68,10 @@ export default function App() {
           onNavigate={handleNavigate}
           onOpenDocuments={openDocuments}
           onOpenSettings={() => {
-            if (!user) setShowLoginModal(true)
+            if (!user) openAuthModal({ message: 'Sign in to view settings and preferences.' })
             else setSettingsOpen(true)
           }}
-          onOpenLogin={() => setShowLoginModal(true)}
+          onOpenLogin={() => openAuthModal()}
         />
 
         <div className="relative z-10 min-h-screen">
@@ -99,7 +83,7 @@ export default function App() {
                   onNavigate={handleNavigate}
                   onStartWithPrompt={() => navigate('/chat')}
                   onOpenDocuments={openDocuments}
-                  onRequireLogin={() => setShowLoginModal(true)}
+                  onRequireLogin={() => openAuthModal()}
                 />
               }
             />
@@ -172,10 +156,11 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onOpenLogin={() => {
             setSettingsOpen(false)
-            setShowLoginModal(true)
+            openAuthModal()
           }}
         />
       )}
+      {authModalOpen && <AuthModal onClose={closeAuthModal} />}
       <Toasts />
       <CommandPalette />
     </>

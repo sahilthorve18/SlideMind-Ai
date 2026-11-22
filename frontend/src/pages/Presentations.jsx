@@ -30,13 +30,17 @@ export default function Presentations({ onEditInChat }) {
   const jobFromUrl = searchParams.get('job')
   const viewParam = searchParams.get('view')
   const mode = viewParam === 'audience' ? 'audience' : jobFromUrl ? 'job' : presentationId === 'new' ? 'new' : presentationId ? 'workspace' : 'list'
-  const { toast, activeJobId, presentationsVersion } = useApp()
+  const { user, toast, activeJobId, presentationsVersion, openAuthModal } = useApp()
   const [rows, setRows] = useState(null)
   const [search, setSearch] = useState('')
   const selectedTheme = mode === 'new' ? location.state?.theme || null : null
   const selectedTopic = mode === 'new' ? location.state?.topic || null : null
 
-  const refresh = () =>
+  const refresh = () => {
+    if (!user) {
+      setRows([])
+      return
+    }
     api
       .presentations()
       .then(setRows)
@@ -44,10 +48,11 @@ export default function Presentations({ onEditInChat }) {
         setRows([])
         toast(e.message, 'error')
       })
+  }
 
   useEffect(() => {
     if (mode === 'list') refresh()
-  }, [mode, presentationsVersion])
+  }, [mode, user, presentationsVersion])
 
   useEffect(() => {
     if (mode !== 'list' || !activeJobId) return
@@ -189,23 +194,28 @@ export default function Presentations({ onEditInChat }) {
           </div>
         )}
 
-        {/* Empty State */}
+        {/* Empty / Signed-out State */}
         {rows?.length === 0 && (
           <div className="liquid-glass-card p-12 text-center">
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#F28C28]/15 text-[#F28C28] border border-[#F28C28]/30">
               <Sparkles size={24} />
             </div>
             <h3 className="mt-4 text-base font-bold text-[#F4E6D3]">
-              No presentations yet
+              {!user ? 'Sign in to view your presentations' : 'No presentations yet'}
             </h3>
             <p className="mx-auto mt-1 max-w-sm text-xs text-[#C5C0B8]">
-              Create your first art-directed presentation using our 10+ design systems, or generate one in chat!
+              {!user
+                ? 'Sign in or continue as guest to create, edit, and manage your architectural presentations.'
+                : 'Create your first art-directed presentation using our 10+ design systems, or generate one in chat!'}
             </p>
             <button
-              onClick={() => navigate('/presentations/new')}
+              onClick={() => {
+                if (!user) openAuthModal?.({ message: 'Sign in to access your presentations.' })
+                else navigate('/presentations/new')
+              }}
               className="liquid-glass-btn-primary mt-5 inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold text-[#101114] cursor-pointer"
             >
-              <Plus size={14} /> Create New Deck
+              {!user ? <span>Sign In to SlideMind</span> : <><Plus size={14} /> Create New Deck</>}
             </button>
           </div>
         )}

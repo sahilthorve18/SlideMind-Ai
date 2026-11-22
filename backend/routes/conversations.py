@@ -187,13 +187,32 @@ def chat():
     db.session.commit()
 
     from services import jobs
+    from services.intent_classifier import (
+        INTENT_NORMAL_CHAT,
+        INTENT_CREATE_PRESENTATION,
+        INTENT_EDIT_PRESENTATION,
+        INTENT_AMBIGUOUS,
+        classify_chat_intent,
+    )
+
     running = jobs.active_job_for(g.user.id)
     if running:
         return fail("job_in_progress", "A request is already in progress. Please wait for it to finish.", 409,
                     {"job_id": running.id, "conversation_id": c.id})
 
-    is_create, topic, slide_count = _is_creation_request(text, has_active_presentation=bool(c.active_presentation_id or pres_id))
-    if is_create:
+    active_p = db.session.get(Presentation, c.active_presentation_id) if c.active_presentation_id else None
+    has_active_pres = bool(active_p)
+    active_title = active_p.title if active_p else ""
+
+    intent_res = classify_chat_intent(
+        text,
+        has_active_presentation=has_active_pres,
+        active_title=active_title,
+    )
+
+    if intent_res.intent == INTENT_CREATE_PRESENTATION:
+        topic = intent_res.topic or text
+        slide_count = intent_res.slide_count or 6
         if getattr(g.user, "is_guest", False):
             limit = current_app.config.get("GUEST_MAX_PRESENTATIONS", 3)
             count = Presentation.query.filter_by(user_id=g.user.id).count()
@@ -226,13 +245,13 @@ def chat():
         return ok({
             "conversation_id": c.id,
             "job_id": job.id,
+            "kind": "generate_presentation",
             "status": "generating",
             "reply": reply,
             "active_presentation_id": c.active_presentation_id
         }, 202)
 
-    has_active_pres = bool(c.active_presentation_id or pres_id)
-    if has_active_pres:
+    elif intent_res.intent == INTENT_EDIT_PRESENTATION and has_active_pres:
         job = jobs.start_edit(
             current_app._get_current_object(),
             g.user.id,
@@ -248,10 +267,33 @@ def chat():
         return ok({
             "conversation_id": c.id,
             "job_id": job.id,
+            "kind": "edit_presentation",
             "status": "generating",
             "reply": reply,
             "active_presentation_id": c.active_presentation_id
         }, 200)
+
+    elif intent_res.intent == INTENT_AMBIGUOUS:
+        clarification_text = intent_res.clarification or (
+            "Would you like me to explain and provide recommendations in chat, "
+            "or should I directly update your presentation with changes?"
+        )
+        msg = Message(
+            conversation_id=c.id,
+            role="assistant",
+            content=clarification_text,
+            meta={"citations": [], "tool_calls": [], "presentation_id": c.active_presentation_id},
+        )
+        db.session.add(msg)
+        db.session.commit()
+        return ok({
+            "conversation_id": c.id,
+            "reply": clarification_text,
+            "message_id": msg.id,
+            "citations": [],
+            "tool_calls": [],
+            "active_presentation_id": c.active_presentation_id,
+        })
 
     limit = current_app.config["CHAT_HISTORY_LIMIT"]
     recent = (

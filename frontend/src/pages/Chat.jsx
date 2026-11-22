@@ -13,6 +13,31 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import { api } from '../services/api'
 import { useApp } from '../context/AppContext'
 
+function isLikelyEditIntent(text) {
+  if (!text) return false
+  const low = text.toLowerCase().trim()
+  if (/^(hi+|hey+|hello+|howdy|yo|good\s+(morning|afternoon|evening)|how\s+are\s+you|who\s+are\s+you|what\s+can\s+you\s+do|thanks?|thank\s+you|ok|okay)\b/.test(low)) {
+    return false
+  }
+  if (/^(can\s+you\s+|please\s+)?(explain|summarize|tell\s+me\s+about|walk\s+me\s+through|what\s+is|what\s+are|describe|review)\s+(my|this|the)?\s*(presentation|deck|ppt|slides?)\b/.test(low)) {
+    return false
+  }
+  if (/^what\s+(is|does|are)\s+(on\s+)?slide\s*\d+\b/.test(low) || /^explain\s+slide\s*\d+\b/.test(low) || /^tell\s+me\s+about\s+slide\s*\d+\b/.test(low)) {
+    return false
+  }
+  if (/^(explain|tell\s+me\s+about|what\s+is|how\s+does)\s+(?!.*?\b(presentation|deck|ppt|slides?)\b)/.test(low)) {
+    return false
+  }
+  if (/\b(create|make|generate|build)\s+(a\s+)?(new\s+)?(\d{1,2}\s*[- ]?slides?\s+)?(presentation|deck|ppt|powerpoint)\b/.test(low)) {
+    return false
+  }
+  const hasAddSlide = /\b(add|insert)\s+(a\s+)?(new\s+)?(conclusion|summary|intro|agenda|blank)?\s*slide\b/.test(low)
+  const hasEditVerbs = /\b(change|update|edit|rewrite|modify|replace|swap|fix|adjust|shorten|expand|rephrase|improve|revise|restyle|reorganize|delete|remove)\b/.test(low)
+  const hasTargets = /\b(slide\s*\d+|title|image|photo|visual|bullet|bullets|content|text|notes|theme|style|color|layout)\b/.test(low)
+  const hasDeckEdit = /\b(make\s+(the\s+)?presentation\s+(more\s+)?(professional|concise|modern|executive)|change\s+(the\s+)?theme)\b/.test(low)
+  return hasAddSlide || (hasEditVerbs && hasTargets) || hasDeckEdit
+}
+
 export default function Chat({
   conversationId,
   onConversationChange,
@@ -24,6 +49,7 @@ export default function Chat({
   onOpenTemplates,
 }) {
   const {
+    user,
     toast,
     activeJobId,
     setActiveJobId,
@@ -31,8 +57,27 @@ export default function Chat({
     setActivePresentationId,
     notifyPresentationsUpdated,
     setCommandPaletteOpen,
+    openAuthModal,
   } = useApp()
   const navigate = useNavigate()
+  const [pendingConfirmation, setPendingConfirmation] = useState(() => {
+    try {
+      return typeof window !== 'undefined' ? sessionStorage.getItem('sm_pending_prompt') : null
+    } catch {
+      return null
+    }
+  })
+
+  useEffect(() => {
+    if (user) {
+      try {
+        const stored = sessionStorage.getItem('sm_pending_prompt')
+        if (stored && !pendingConfirmation) {
+          setPendingConfirmation(stored)
+        }
+      } catch {}
+    }
+  }, [user])
   const [messages, setMessages] = useState(() => {
     try {
       const initPrompt = typeof window !== 'undefined' ? sessionStorage.getItem('initialPrompt') : null
@@ -130,7 +175,7 @@ export default function Chat({
   useEffect(() => {
     prevConvIdRef.current = conversationId
 
-    if (!conversationId) {
+    if (!conversationId || !user) {
       // If we are actively sending, busy, or have active in-memory messages, DO NOT wipe them!
       if (isSendingRef.current || busy || messages.length > 0) {
         setLoadingConversation(false)
@@ -207,14 +252,18 @@ export default function Chat({
         if (!isCurrent) return
         console.error('Failed to load conversation:', e)
         setLoadingConversation(false)
-        setConversationError(e.message || 'Failed to load conversation')
-        toast(e.message || 'Could not load conversation', 'error')
+        if (e.status === 401 || e.code === 'unauthorized') {
+          setConversationError('Please sign in to view this conversation.')
+        } else {
+          setConversationError(e.message || 'Failed to load conversation')
+          toast(e.message || 'Could not load conversation', 'error')
+        }
       })
 
     return () => {
       isCurrent = false
     }
-  }, [conversationId])
+  }, [conversationId, user])
 
   useEffect(() => {
     if (messages.length > 0 && messages.length !== prevMsgCountRef.current) {
@@ -282,8 +331,30 @@ export default function Chat({
 
   const send = async (text, options = {}, isInitial = false) => {
     if (isSendingRef.current || (!isInitial && (busy || Boolean(activeJobId))) || !text.trim()) return
-    isSendingRef.current = true
     const cleanText = text.replace(/\[Style:[^\]]+\]/gi, '').replace(/\[Deep Research\]/gi, '').trim() || text
+
+    if (!user) {
+      try {
+        sessionStorage.setItem('sm_pending_prompt', cleanText)
+      } catch {}
+      openAuthModal?.({
+        message: 'Sign in to continue chatting with SlideMind AI.',
+        pendingMessage: cleanText,
+        onSuccess: () => {
+          setPendingConfirmation(cleanText)
+        },
+      })
+      return
+    }
+
+    if (pendingConfirmation === cleanText) {
+      setPendingConfirmation(null)
+      try {
+        sessionStorage.removeItem('sm_pending_prompt')
+      } catch {}
+    }
+
+    isSendingRef.current = true
     setMessages((m) => {
       const hasOptimistic = m.some((msg) => msg.role === 'user' && msg.content === cleanText)
       if (hasOptimistic) return m
@@ -294,7 +365,9 @@ export default function Chat({
     abortControllerRef.current = new AbortController()
     try {
       const activePid = presentation?.id || activePresentationId
-      const res = await api.chat(cleanText, conversationId, activePid, {
+      const isEdit = isLikelyEditIntent(cleanText)
+      const targetPid = isEdit ? activePid : null
+      const res = await api.chat(cleanText, conversationId, targetPid, {
         ...options,
         signal: abortControllerRef.current.signal,
       })
@@ -342,7 +415,14 @@ export default function Chat({
       }
       adopt(e.details?.conversation_id)
       let errorMessage = e.message
-      if (e.code === 'rate_limit_exceeded') {
+      if (e.status === 401 || e.code === 'unauthorized') {
+        errorMessage = 'Please sign in to continue chatting.'
+        openAuthModal?.({
+          message: 'Sign in to continue chatting with SlideMind AI.',
+          pendingMessage: cleanText,
+          onSuccess: () => setPendingConfirmation(cleanText),
+        })
+      } else if (e.code === 'rate_limit_exceeded') {
         errorMessage = 'The AI is currently rate-limited. Please wait a moment and try again.'
       } else if (e.code === 'ai_unavailable') {
         errorMessage = `AI service error: ${e.message}`
@@ -364,6 +444,10 @@ export default function Chat({
   }
 
   const uploadFiles = async (files) => {
+    if (!user) {
+      openAuthModal?.({ message: 'Sign in to upload reference documents.' })
+      return
+    }
     for (const f of files) {
       try {
         await api.upload(f)
@@ -515,6 +599,43 @@ export default function Chat({
 
             {/* Central Prompt Composer */}
             <section className="max-w-4xl mx-auto mb-6 sm:mb-8">
+              {user && pendingConfirmation && (
+                <div className="mb-2.5 flex items-center justify-between rounded-2xl border border-[#F28C28]/35 bg-[#17191E]/95 backdrop-blur-xl px-4 py-2 text-xs shadow-xl animate-in fade-in slide-in-from-bottom-2">
+                  <div className="flex items-center gap-2 truncate pr-2">
+                    <span className="material-symbols-outlined text-[#F28C28] text-sm">mark_chat_unread</span>
+                    <span className="text-[#888A90]">Ready to send:</span>
+                    <strong className="text-[#F4E6D3] font-medium truncate">"{pendingConfirmation}"</strong>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const msgToSend = pendingConfirmation
+                        setPendingConfirmation(null)
+                        try {
+                          sessionStorage.removeItem('sm_pending_prompt')
+                        } catch {}
+                        send(msgToSend)
+                      }}
+                      className="liquid-glass-btn-primary px-3 py-1 rounded-full text-[11px] font-semibold text-[#101114] cursor-pointer"
+                    >
+                      Send Message
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingConfirmation(null)
+                        try {
+                          sessionStorage.removeItem('sm_pending_prompt')
+                        } catch {}
+                      }}
+                      className="text-[#888A90] hover:text-[#F4E6D3] text-[11px] px-2 py-1 transition-colors cursor-pointer"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
               <ChatInput
                 onSend={send}
                 onStop={handleStopGeneration}
@@ -642,6 +763,15 @@ export default function Chat({
                               jobId={m.job_id}
                               kind={m.kind}
                               onDone={handleJobDone}
+                              onFailed={(err) => {
+                                setActiveJobId?.(null)
+                                setMessages((prev) =>
+                                  prev.map((msg) =>
+                                    msg.job_id === m.job_id ? { ...msg, generating: false } : msg
+                                  )
+                                )
+                                if (err) toast(err, 'error')
+                              }}
                               onRetry={() => {
                                 send(
                                   m.kind === 'edit_presentation'
@@ -713,7 +843,7 @@ export default function Chat({
                 </div>
                 <div className="liquid-glass-card rounded-2xl rounded-tl-sm px-5 py-3 flex items-center gap-2 text-[#888A90]">
                   <span className="material-symbols-outlined animate-spin text-[#F28C28]">autorenew</span>
-                  <span className="text-xs font-label-md text-[#C5C0B8]">Synthesizing architectural slide specification…</span>
+                  <span className="text-xs font-label-md text-[#C5C0B8]">SlideMind AI is thinking…</span>
                 </div>
               </div>
             )}
@@ -731,6 +861,43 @@ export default function Chat({
                 : '-translate-x-1/2'
             }`}
           >
+            {user && pendingConfirmation && (
+              <div className="mb-2.5 flex items-center justify-between rounded-2xl border border-[#F28C28]/35 bg-[#17191E]/95 backdrop-blur-xl px-4 py-2 text-xs shadow-xl animate-in fade-in slide-in-from-bottom-2">
+                <div className="flex items-center gap-2 truncate pr-2">
+                  <span className="material-symbols-outlined text-[#F28C28] text-sm">mark_chat_unread</span>
+                  <span className="text-[#888A90]">Ready to send:</span>
+                  <strong className="text-[#F4E6D3] font-medium truncate">"{pendingConfirmation}"</strong>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const msgToSend = pendingConfirmation
+                      setPendingConfirmation(null)
+                      try {
+                        sessionStorage.removeItem('sm_pending_prompt')
+                      } catch {}
+                      send(msgToSend)
+                    }}
+                    className="liquid-glass-btn-primary px-3 py-1 rounded-full text-[11px] font-semibold text-[#101114] cursor-pointer"
+                  >
+                    Send Message
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingConfirmation(null)
+                      try {
+                        sessionStorage.removeItem('sm_pending_prompt')
+                      } catch {}
+                    }}
+                    className="text-[#888A90] hover:text-[#F4E6D3] text-[11px] px-2 py-1 transition-colors cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
             {presentation && (
               <div className="mb-2 flex items-center justify-between rounded-xl border border-white/10 bg-zinc-900/95 backdrop-blur-xl px-4 py-1.5 text-xs text-outline shadow-xl">
                 <span className="truncate text-white/80">

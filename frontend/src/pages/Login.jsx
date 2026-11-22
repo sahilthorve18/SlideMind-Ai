@@ -25,6 +25,12 @@ export default function Login({ onCancel, onSuccess }) {
   const [googleBusy, setGoogleBusy] = useState(false)
 
   const handleComplete = () => {
+    const postLoginRedirect = sessionStorage.getItem('sm_post_login_redirect')
+    if (postLoginRedirect) {
+      sessionStorage.removeItem('sm_post_login_redirect')
+      navigate(postLoginRedirect)
+      return
+    }
     if (onSuccess) onSuccess()
     else if (onCancel) onCancel()
     else navigate('/')

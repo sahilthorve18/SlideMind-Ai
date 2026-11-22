@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Loader2, XCircle } from 'lucide-react'
 import { api } from '../services/api'
 
-export default function JobProgress({ jobId, kind, onDone, onRetry }) {
+export default function JobProgress({ jobId, kind, onDone, onFailed, onRetry }) {
   const [job, setJob] = useState(null)
   const [netError, setNetError] = useState(false)
   const doneRef = useRef(false)
@@ -23,14 +23,16 @@ export default function JobProgress({ jobId, kind, onDone, onRetry }) {
       if (j.status === 'done' && !doneRef.current) {
         doneRef.current = true
         if (eventSource) eventSource.close()
-        return onDone(j.result)
+        return onDone?.(j.result)
       }
       if (j.status === 'failed') {
         if (eventSource) eventSource.close()
+        onFailed?.(j.error)
       }
     }
 
     const startPolling = () => {
+      let failCount = 0
       const poll = async () => {
         try {
           const j = await api.jobStatus(jobId)
@@ -39,8 +41,14 @@ export default function JobProgress({ jobId, kind, onDone, onRetry }) {
           if (j.status !== 'done' && j.status !== 'failed') {
             pollTimer = setTimeout(poll, 1500)
           }
-        } catch {
-          if (alive) setNetError(true)
+        } catch (err) {
+          if (!alive) return
+          failCount++
+          if (err?.status === 404 || failCount > 6) {
+            onFailed?.('Job completed or unavailable.')
+            return
+          }
+          setNetError(true)
           pollTimer = setTimeout(poll, 2500)
         }
       }

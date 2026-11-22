@@ -111,39 +111,79 @@ export function AppProvider({ children }) {
     return null
   }
 
+  const [authModalOpen, setAuthModalOpen] = useState(false)
+  const [authModalConfig, setAuthModalConfig] = useState({
+    message: '',
+    pendingMessage: '',
+    onSuccess: null,
+  })
+
+  const openAuthModal = useCallback((cfg = {}) => {
+    setAuthModalConfig({
+      message: cfg.message || 'Sign in to continue chatting with SlideMind AI.',
+      pendingMessage: cfg.pendingMessage || '',
+      onSuccess: cfg.onSuccess || null,
+    })
+    setAuthModalOpen(true)
+  }, [])
+
+  const closeAuthModal = useCallback(() => {
+    setAuthModalOpen(false)
+  }, [])
+
   useEffect(() => {
     const redirect = finishGoogleRedirect()
     if (redirect?.error) toast(redirect.error, 'error')
     const token = localStorage.getItem('sm_token')
     if (!token) {
-      api.guestLogin()
-        .then((res) => {
-          localStorage.setItem('sm_token', res.token)
-          setUser(res.user)
-        })
-        .catch(() => {})
-        .finally(() => setAuthReady(true))
+      setUser(null)
+      setAuthReady(true)
       return
     }
     api.me()
       .then((u) => {
         setUser(u)
-        if (redirect?.ok) toast('Signed in with Google.', 'success')
+        if (redirect?.ok) {
+          toast('Signed in with Google.', 'success')
+          const postRedirect = sessionStorage.getItem('sm_post_login_redirect')
+          if (postRedirect) {
+            sessionStorage.removeItem('sm_post_login_redirect')
+            window.location.replace(postRedirect)
+          }
+        }
       })
       .catch(() => {
+        // Expired or invalid token: clean it up and show signed-out state.
+        // Never automatically create a guest account.
         localStorage.removeItem('sm_token')
-        api.guestLogin()
-          .then((res) => {
-            localStorage.setItem('sm_token', res.token)
-            setUser(res.user)
-          })
-          .catch(() => {})
+        setUser(null)
       })
       .finally(() => setAuthReady(true))
   }, [])
 
-  const startGoogle = async () => {
-    const { auth_url, state } = await api.googleStart(window.location.origin)
+  // Validate activeJobId on mount so completed or stale jobs are not retained
+  useEffect(() => {
+    const savedJobId = localStorage.getItem('sm_active_job_id')
+    const token = localStorage.getItem('sm_token')
+    if (savedJobId && token) {
+      api.jobStatus(savedJobId)
+        .then((j) => {
+          if (!j || j.status === 'done' || j.status === 'failed') {
+            setActiveJobId(null)
+          }
+        })
+        .catch(() => {
+          setActiveJobId(null)
+        })
+    } else if (savedJobId && !token) {
+      setActiveJobId(null)
+    }
+  }, [setActiveJobId])
+
+  const startGoogle = async (returnTo) => {
+    const origin = window.location.origin
+    const targetUrl = returnTo || origin
+    const { auth_url, state } = await api.googleStart(targetUrl)
     sessionStorage.setItem('sm_oauth_state', state)
     localStorage.setItem('sm_oauth_state', state)
     window.location.assign(auth_url)
@@ -179,8 +219,18 @@ export function AppProvider({ children }) {
     localStorage.removeItem('sm_token')
     sessionStorage.removeItem('sm_oauth_state')
     localStorage.removeItem('sm_oauth_state')
+    sessionStorage.removeItem('sm_active_chat')
+    localStorage.removeItem('sm_active_chat')
+    sessionStorage.removeItem('sm_active_job_id')
+    localStorage.removeItem('sm_active_job_id')
+    sessionStorage.removeItem('sm_active_pres_id')
+    localStorage.removeItem('sm_active_pres_id')
+    sessionStorage.removeItem('sm_pending_prompt')
     document.cookie = 'sm_token=; Max-Age=0; path=/;'
     setUser(null)
+    setActiveJobIdState(null)
+    setActivePresentationIdState(null)
+    toast('You have been signed out.', 'info')
   }
 
   return (
@@ -209,6 +259,10 @@ export function AppProvider({ children }) {
         setIsPresenting,
         commandPaletteOpen,
         setCommandPaletteOpen,
+        authModalOpen,
+        openAuthModal,
+        closeAuthModal,
+        authModalConfig,
       }}
     >
       {children}

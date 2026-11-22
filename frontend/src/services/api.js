@@ -14,7 +14,11 @@ function unwrap(promise) {
     .then((r) => r.data.data)
     .catch((e) => {
       const body = e.response?.data?.error
-      const err = new Error(body?.message || 'Could not reach the server. Please try again.')
+      let message = body?.message || 'Could not reach the server. Please try again.'
+      if (e.response?.status === 401 || body?.code === 'unauthorized') {
+        message = 'Please sign in to continue.'
+      }
+      const err = new Error(message)
       err.code = body?.code || 'network_error'
       err.status = e.response?.status
       err.details = body?.details

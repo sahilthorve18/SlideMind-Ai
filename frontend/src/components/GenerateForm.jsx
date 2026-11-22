@@ -17,7 +17,7 @@ const field =
   'w-full rounded-xl border border-white/[0.14] bg-[#1E2026] px-3.5 py-2 text-xs text-[#F4E6D3] outline-none focus:border-[#F28C28] transition-colors placeholder:text-[#888A90]'
 
 export default function GenerateForm({ onStarted, onCancel, initialTheme, initialTopic }) {
-  const { user, toast, preferences } = useApp()
+  const { user, toast, preferences, openAuthModal } = useApp()
   const [docs, setDocs] = useState([])
   const [busy, setBusy] = useState(false)
   const [f, setF] = useState({
@@ -40,8 +40,10 @@ export default function GenerateForm({ onStarted, onCancel, initialTheme, initia
   }, [initialTheme, initialTopic])
 
   useEffect(() => {
-    api.documents().then(setDocs).catch(() => {})
-  }, [])
+    if (user) {
+      api.documents().then(setDocs).catch(() => {})
+    }
+  }, [user])
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }))
   const toggleDoc = (id) =>
     set(
@@ -53,6 +55,10 @@ export default function GenerateForm({ onStarted, onCancel, initialTheme, initia
 
   const submit = async (e) => {
     e.preventDefault()
+    if (!user) {
+      openAuthModal?.({ message: 'Sign in to generate presentations.' })
+      return
+    }
     setBusy(true)
     try {
       const body = {
