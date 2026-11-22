@@ -56,8 +56,8 @@ def create_app(overrides: dict | None = None) -> Flask:
         if o_clean and o_clean not in cors_origins:
             cors_origins.append(o_clean)
 
-    # Dynamically match preview deployments on Vercel and Render
-    cors_origins.append(re.compile(r"^https:\/\/[\w\-]+(\.vercel\.app|\.onrender\.com)$"))
+    # Dynamically match preview deployments on Vercel and Render for SlideMind
+    cors_origins.append(re.compile(r"^https:\/\/(slide-mind-ai|slidemind)[\w\-]*(\.vercel\.app|\.onrender\.com)$"))
 
     CORS(
         app,
@@ -83,7 +83,7 @@ def create_app(overrides: dict | None = None) -> Flask:
 
     # Chat triggers paid/limited Gemini calls (and multi-step tool loops): throttle harder than the default.
     limiter.limit(app.config.get("CHAT_RATE_LIMIT", "15 per minute"))(app.view_functions["conversations.chat"])
-    limiter.limit(app.config.get("GUEST_RATE_LIMIT", "30 per hour"))(app.view_functions["auth.guest_login"])
+    limiter.limit(app.config.get("GUEST_RATE_LIMIT", "5 per hour"))(app.view_functions["auth.guest_login"])
 
     @app.after_request
     def set_security_headers(response):

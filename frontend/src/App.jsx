@@ -55,7 +55,17 @@ export default function App() {
     else if (targetView === 'presentations') navigate('/presentations')
   }
 
-  if (!authReady) return null
+  if (!authReady) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#0C0D0E] text-[#F4E6D3]">
+        <div className="relative mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#1E2026] border border-white/[0.08] shadow-2xl">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-[#F28C28]/20 border-t-[#F28C28]" />
+        </div>
+        <p className="text-xs font-semibold tracking-wider uppercase text-[#888A90]">Connecting to SlideMind AI</p>
+        <p className="mt-1 text-[11px] text-[#888A90]/60">Waking up secure server if idle...</p>
+      </div>
+    )
+  }
 
   return (
     <>

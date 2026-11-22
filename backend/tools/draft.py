@@ -208,7 +208,7 @@ def generate_slide_outline(ctx, a):
             presentation_id=p.id,
             position=s_rec["position"],
             title=s_rec["title"],
-            content={"purpose": s_rec["purpose"], "bullets": [], "layout": s_rec["layout"]}
+            content={"purpose": s_rec["purpose"], "planning_purpose": s_rec["purpose"], "bullets": [], "layout": s_rec["layout"]}
         ))
     if ctx.conversation_id:
         c = db.session.get(Conversation, ctx.conversation_id)
@@ -401,7 +401,33 @@ def edit_existing_slide(ctx, a):
         if a["layout"] not in LAYOUTS:
             raise ToolError("layout must be one of: " + ", ".join(LAYOUTS))
         content["layout"] = a["layout"]
+
+    # Keep composed deck spec in sync so preview scene and PPTX render updated edits
+    if "spec" in content and isinstance(content["spec"], dict):
+        spec = dict(content["spec"])
+        if "title" in a:
+            spec["title"] = s.title
+        if "bullets" in a:
+            bullet_texts = [t[:130] for t in a["bullets"][:6]]
+            blocks = list(spec.get("blocks") or [])
+            updated = False
+            for idx, b in enumerate(blocks):
+                if isinstance(b, dict) and b.get("type") == "bullets":
+                    blocks[idx] = {"type": "bullets", "items": bullet_texts}
+                    updated = True
+                    break
+            if not updated:
+                blocks.append({"type": "bullets", "items": bullet_texts})
+            try:
+                from services.deck.blocks import normalize_blocks
+                spec["blocks"] = normalize_blocks(blocks)
+            except Exception:
+                spec["blocks"] = blocks
+        content["spec"] = spec
+
+    from sqlalchemy.orm.attributes import flag_modified
     s.content = content
+    flag_modified(s, "content")
     _commit(p, f"edited slide {a['slide_number']}")
     return {"slide": _slide_view(s), **_sync_note(p)}
 
@@ -445,7 +471,17 @@ def generate_diagram(ctx, a):
         raise ToolError("The model did not return a usable diagram.")
     ids = {n.get("id") for n in nodes if isinstance(n, dict)}
     edges = [e for e in edges if isinstance(e, dict) and e.get("from") in ids and e.get("to") in ids]
-    s.content = {**(s.content or {}), "layout": "diagram", "diagram": {"nodes": nodes[:8], "edges": edges[:12]}}
+    c_dict = dict(s.content or {})
+    c_dict.update({"layout": "diagram", "diagram": {"nodes": nodes[:8], "edges": edges[:12]}})
+    if "spec" in c_dict and isinstance(c_dict["spec"], dict):
+        sp = dict(c_dict["spec"])
+        blocks = [b for b in (sp.get("blocks") or []) if isinstance(b, dict) and b.get("type") != "diagram"]
+        blocks.insert(0, {"type": "diagram", "nodes": nodes[:8], "edges": edges[:12]})
+        sp["blocks"] = blocks
+        c_dict["spec"] = sp
+    from sqlalchemy.orm.attributes import flag_modified
+    s.content = c_dict
+    flag_modified(s, "content")
     _commit(p, f"diagram on slide {a['slide_number']}")
     return {"slide": a["slide_number"], "nodes": len(nodes[:8]), "edges": len(edges[:12])}
 
@@ -469,9 +505,24 @@ def generate_chart(ctx, a):
         raise ToolError("labels and values must have the same length (2-12 points).")
     if not a.get("source_ref"):
         raise ToolError("Charts need a source_ref: only chart data that came from a document or research result.")
-    s.content = {**(s.content or {}), "layout": "chart",
-                 "chart": {"type": a["chart_type"], "title": a["title"][:200], "labels": a["labels"], "values": a["values"],
-                           "unit": a.get("unit", ""), "source_ref": a["source_ref"]}}
+    c_dict = dict(s.content or {})
+    c_dict.update({
+        "layout": "chart",
+        "chart": {"type": a["chart_type"], "title": a["title"][:200], "labels": a["labels"], "values": a["values"],
+                  "unit": a.get("unit", ""), "source_ref": a["source_ref"]}
+    })
+    if "spec" in c_dict and isinstance(c_dict["spec"], dict):
+        sp = dict(c_dict["spec"])
+        blocks = [b for b in (sp.get("blocks") or []) if isinstance(b, dict) and b.get("type") != "chart"]
+        blocks.insert(0, {
+            "type": "chart", "kind": a["chart_type"], "labels": a["labels"],
+            "series": [{"name": "", "values": a["values"]}], "title": a["title"][:200]
+        })
+        sp["blocks"] = blocks
+        c_dict["spec"] = sp
+    from sqlalchemy.orm.attributes import flag_modified
+    s.content = c_dict
+    flag_modified(s, "content")
     _commit(p, f"chart on slide {a['slide_number']}")
     return {"slide": a["slide_number"], "points": len(a["values"])}
 

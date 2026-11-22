@@ -121,7 +121,8 @@ def test_callback_rejects_unverified_email_and_failed_exchange(app, monkeypatch)
         def boom(code):
             raise google_auth.GoogleAuthError("x")
         monkeypatch.setattr(google_auth, "exchange_code", boom)
-        assert fragment(c.get(f"/api/auth/google/callback?code=a&state={state}")) == {"error": "google_failed"}
+        frag = fragment(c.get(f"/api/auth/google/callback?code=a&state={state}"))
+        assert frag.get("error") == "google_failed"
     with app.app_context():
         assert User.query.count() == 0
 

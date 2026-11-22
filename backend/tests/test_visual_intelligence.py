@@ -182,7 +182,7 @@ def test_select_best_slide_visual_end_to_end():
     assert "url" in visual
     assert "title" in visual
     assert "source" in visual
-    assert visual["source"] in ("Wikimedia Commons", "Unsplash", "Pexels")
+    assert visual["source"] in ("Wikimedia Commons", "Wikipedia", "Unsplash", "Pexels")
     assert "license" in visual
     assert "dimensions" in visual
     assert visual["dimensions"]["width"] > 0

@@ -15,7 +15,7 @@ import pytest
 from app import create_app
 from database import db
 from models import Presentation, Slide, User, VisualAsset
-from services import exporter, slides, storage, visual_assets, visual_intelligence
+from services import exporter, slides, storage, visual_intelligence
 
 
 @pytest.fixture
@@ -87,7 +87,7 @@ def test_visual_selection_across_topics(topic, slide_title, expected_terms):
 
     assert visual is not None
     assert visual["url"].startswith("http")
-    assert visual["source"] in ("Wikimedia Commons", "Unsplash", "Pexels")
+    assert visual["source"] in ("Wikimedia Commons", "Wikipedia", "Unsplash", "Pexels")
     assert visual["dimensions"]["width"] > 0
     assert visual["dimensions"]["height"] > 0
     assert visual["relevance_score"] >= 50.0

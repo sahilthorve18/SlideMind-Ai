@@ -38,6 +38,8 @@ class Config:
     MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "15"))
     MAX_CONTENT_LENGTH = MAX_UPLOAD_MB * 1024 * 1024
     RATELIMIT_DEFAULT = os.getenv("RATELIMIT_DEFAULT", "120 per minute")
+    GUEST_RATE_LIMIT = os.getenv("GUEST_RATE_LIMIT", "5 per hour")
+    RATELIMIT_STORAGE_URI = os.getenv("REDIS_URL", os.getenv("RATELIMIT_STORAGE_URI", "memory://"))
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     PLANNER_MODEL = os.getenv("PLANNER_MODEL", "")  # stronger model for storyline + slide specs (falls back to GEMINI_MODEL)

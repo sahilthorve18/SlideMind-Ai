@@ -219,3 +219,28 @@ def test_regenerate_composed_slide_keeps_validation(app, scripted, monkeypatch):
         assert r.status_code == 422  # invented numbers are refused; the slide stays as it was
         det = c.get(f"/api/presentation/{pid}", headers=h).get_json()["data"]
         assert det["slides"][2]["content"]["spec"]["blocks"][0]["type"] == "steps"
+
+
+def test_chat_tool_edit_existing_slide_updates_composed_spec(app, scripted):
+    """Verify that editing slide title or bullets via draft tools synchronizes the composed spec."""
+    with app.test_client() as c:
+        h = login(c)
+        pid = run_job(app, c, h)["result"]["presentation_id"]
+        with app.app_context():
+            from tools import draft
+            from agents.registry import ToolContext
+            from models import Presentation
+            p = Presentation.query.get(pid)
+            ctx = ToolContext(user_id=p.user_id)
+            draft.edit_existing_slide(ctx, {
+                "presentation_id": pid,
+                "slide_number": 3,
+                "title": "Updated Title for Slide 3",
+                "bullets": ["Brand new verified bullet point A", "Brand new verified bullet point B"]
+            })
+            slide_3 = next(s for s in p.slides if s.position == 3)
+            assert slide_3.title == "Updated Title for Slide 3"
+            assert slide_3.content["spec"]["title"] == "Updated Title for Slide 3"
+            bullet_block = next((b for b in slide_3.content["spec"]["blocks"] if b["type"] == "bullets"), None)
+            assert bullet_block is not None
+            assert "Brand new verified bullet point A" in bullet_block["items"]

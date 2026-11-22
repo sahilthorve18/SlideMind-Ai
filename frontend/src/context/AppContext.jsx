@@ -140,8 +140,15 @@ export function AppProvider({ children }) {
       setAuthReady(true)
       return
     }
+
+    let active = true
+    const timeoutId = setTimeout(() => {
+      if (active) setAuthReady(true)
+    }, 12000)
+
     api.me()
       .then((u) => {
+        if (!active) return
         setUser(u)
         if (redirect?.ok) {
           toast('Signed in with Google.', 'success')
@@ -153,12 +160,21 @@ export function AppProvider({ children }) {
         }
       })
       .catch(() => {
+        if (!active) return
         // Expired or invalid token: clean it up and show signed-out state.
         // Never automatically create a guest account.
         localStorage.removeItem('sm_token')
         setUser(null)
       })
-      .finally(() => setAuthReady(true))
+      .finally(() => {
+        clearTimeout(timeoutId)
+        if (active) setAuthReady(true)
+      })
+
+    return () => {
+      active = false
+      clearTimeout(timeoutId)
+    }
   }, [])
 
   // Validate activeJobId on mount so completed or stale jobs are not retained
