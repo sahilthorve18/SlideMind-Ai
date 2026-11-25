@@ -7,11 +7,11 @@ PLANNING_WORDS = ("slide goal", "purpose:", "this slide will", "this slide shows
                   "insert ", "your text here", "example text", "[")
 KNOWN_FILLER = ("10x", "99.4%", "0s friction", "slidemind next-gen", "design standard")
 AUTO_LABEL = re.compile(r"\b(Pillar|Phase|Stage|Step|Point|Item|Feature)\s+\d\b", re.I)
-NUM = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?%?)(?![\w])")
+NUM = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?(?:[%kmbtxKMBTX+])?)(?![\w])")
 
 
 def _norm_num(s: str) -> str:
-    return s.replace(",", "").rstrip("%").rstrip(".")
+    return s.replace(",", "").rstrip("%+").rstrip(".").lower()
 
 
 def fact_number_pool(facts: list[dict], user_text: str = "") -> set[str]:
@@ -32,6 +32,37 @@ def untraced_numbers(text: str, pool: set[str], allow_small: bool = True) -> lis
         if n not in pool:
             bad.append(m)
     return bad
+
+
+def filter_grounded_facts(facts: list[dict], user_text: str, passages: list[dict], web: str) -> list[dict]:
+    """Drop facts whose numbers (>12) contradict or spoof their attributed source ('user', 'P#', 'W')."""
+    all_passages = " ".join(p.get("text", "") for p in (passages or []))
+    user_pool = {_norm_num(m) for m in NUM.findall(user_text or "")}
+    web_pool = {_norm_num(m) for m in NUM.findall(web or "")}
+    passage_pool = {_norm_num(m) for m in NUM.findall(all_passages)}
+    has_material = bool(passages or (web and web.strip()))
+
+    kept = []
+    for f in facts:
+        src = str(f.get("source") or "general").strip()
+        text = f"{f.get('claim', '')} {f.get('number') or ''}"
+        nums = untraced_numbers(text, set(), allow_small=True)
+        if nums:
+            norm_nums = [_norm_num(x) for x in nums]
+            if src == "user" and any(n not in user_pool for n in norm_nums):
+                continue
+            if src == "W" and any(n not in web_pool for n in norm_nums):
+                continue
+            if src.startswith("P") and any(n not in passage_pool for n in norm_nums):
+                continue
+            if src not in ("user", "W", "general") and not src.startswith("P"):
+                if any(n not in (user_pool | passage_pool | web_pool) for n in norm_nums):
+                    continue
+            if src == "general" and has_material:
+                if any(n not in (user_pool | passage_pool | web_pool) for n in norm_nums):
+                    continue
+        kept.append(f)
+    return kept
 
 
 def validate_slide(spec: dict, facts: list[dict], user_text: str, source_text: str = "") -> list[str]:

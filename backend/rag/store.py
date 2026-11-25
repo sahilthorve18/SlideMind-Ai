@@ -18,6 +18,8 @@ from services.prompt_safety import sanitize_filename
 MAX_CHUNKS = 400  # keeps indexing inside free-tier time/memory limits
 MAX_DOCS_PER_USER = 100
 GUEST_MAX_DOCS = 10
+MAX_TOTAL_DOC_BYTES_USER = 50 * 1024 * 1024  # 50 MB total storage quota per user
+MAX_TOTAL_DOC_BYTES_GUEST = 10 * 1024 * 1024  # 10 MB total storage quota per guest
 
 
 class DocumentTooLarge(Exception):
@@ -42,9 +44,15 @@ def index_document(user_id: str, filename: str, data: bytes) -> tuple[Document, 
         db.session.commit()
 
     u = db.session.get(User, user_id)
-    cap = GUEST_MAX_DOCS if (u and getattr(u, "is_guest", False)) else MAX_DOCS_PER_USER
-    if Document.query.filter_by(user_id=user_id).count() >= cap:
+    is_guest = bool(u and getattr(u, "is_guest", False))
+    cap = GUEST_MAX_DOCS if is_guest else MAX_DOCS_PER_USER
+    byte_cap = MAX_TOTAL_DOC_BYTES_GUEST if is_guest else MAX_TOTAL_DOC_BYTES_USER
+    user_docs = Document.query.filter_by(user_id=user_id).all()
+    if len(user_docs) >= cap:
         raise DocumentTooLarge(f"Document upload limit reached ({cap} files). Delete older documents to upload more.")
+    used_bytes = sum(int(d.size_bytes or 0) for d in user_docs)
+    if (used_bytes + len(data)) > byte_cap:
+        raise DocumentTooLarge(f"Document storage quota exceeded ({byte_cap // (1024 * 1024)} MB max). Delete older documents to upload more.")
 
     chunks = chunk_segments(segments)
     if len(chunks) > MAX_CHUNKS:

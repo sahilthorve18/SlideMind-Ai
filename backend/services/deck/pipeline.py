@@ -72,8 +72,17 @@ def gather_material(ctx, params, progress) -> tuple[list[dict], str]:
     passages, web = [], ""
     topic = params["topic"]
 
+    app_obj = None
+    try:
+        app_obj = current_app._get_current_object()
+    except Exception:
+        pass
+
     def _fetch_kb(query_str):
         try:
+            if app_obj:
+                with app_obj.app_context():
+                    return registry.execute("search_knowledge_base", {"query": query_str, "k": 6}, ctx)
             return registry.execute("search_knowledge_base", {"query": query_str, "k": 6}, ctx)
         except Exception as e:  # noqa: BLE001
             log.warning("kb search failed (%s): %s", query_str, e)
@@ -83,6 +92,12 @@ def gather_material(ctx, params, progress) -> tuple[list[dict], str]:
         if not params.get("use_web_research"):
             return ""
         try:
+            if app_obj:
+                with app_obj.app_context():
+                    progress("web_research", "running")
+                    r = registry.execute("web_research", {"query": f"{topic}: key facts, figures and dates with sources"}, ctx)
+                    progress("web_research", "success")
+                    return r.get("summary", "")[:6000]
             progress("web_research", "running")
             r = registry.execute("web_research", {"query": f"{topic}: key facts, figures and dates with sources"}, ctx)
             progress("web_research", "success")
@@ -157,6 +172,7 @@ def build_fact_sheet(params, passages, web) -> list[dict]:
         if isinstance(f, dict) and str(f.get("claim", "")).strip():
             facts.append({"id": f"F{i + 1}", "claim": str(f["claim"]).strip()[:240], "number": (str(f["number"]).strip() if f.get("number") else None),
                           "source": str(f.get("source") or "general"), "kind": str(f.get("kind") or "fact")})
+    facts = validators.filter_grounded_facts(facts, params["topic"], passages, web)
     if not facts:
         raise ToolError("Could not extract any facts for this topic. Add a document or more detail to the request.")
     return facts

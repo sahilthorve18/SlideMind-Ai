@@ -53,7 +53,9 @@ def extract_asset_id_from_url(url: str) -> str | None:
 
 
 def is_safe_visual_url(url: str | None) -> bool:
-    """Validate that a slide image URL is http(s) or a local /api/assets/<id>/view path (rejecting javascript:/data:)."""
+    """Validate that a slide image URL is a public http(s) URL or local /api/assets/<id>/view path."""
+    import ipaddress
+
     if not isinstance(url, str):
         return False
     u = url.strip()
@@ -62,4 +64,15 @@ def is_safe_visual_url(url: str | None) -> bool:
     if u.startswith("/api/assets/"):
         return bool(extract_asset_id_from_url(u))
     parsed = urlparse(u)
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    host = parsed.hostname.lower()
+    if host in ("localhost", "metadata.google.internal", "0.0.0.0"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    except ValueError:
+        pass  # domain name (further checked via DNS at fetch time)
+    return True

@@ -97,14 +97,33 @@ def get_or_cache_remote_image(url: str, timeout: int = 20) -> Optional[bytes]:
         log.debug("Disk cache check failed: %s", e)
         cache_file = None
 
-    # Safe Remote fetch with size streaming ceiling (25MB max)
+    # Safe Remote fetch with manual redirect SSRF validation (max 3 hops) & 25MB ceiling
     if url.startswith("http://") or url.startswith("https://"):
         try:
+            from urllib.parse import urljoin
             import requests
 
             headers = {"User-Agent": "SlideMind-AI/2.5 Exporter"}
-            resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
-            if resp.status_code == 200:
+            current_url = url
+            resp = None
+            max_redirects = 3
+            for hop in range(max_redirects + 1):
+                if not is_safe_remote_url(current_url):
+                    log.warning("Security Guard: Blocked unsafe redirect target %s", current_url)
+                    return None
+                r = requests.get(current_url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+                if r.status_code in (301, 302, 303, 307, 308):
+                    location = r.headers.get("Location")
+                    r.close()
+                    if not location or hop >= max_redirects:
+                        log.warning("Security Guard: Aborting redirect chain from %s", url)
+                        return None
+                    current_url = urljoin(current_url, location)
+                    continue
+                resp = r
+                break
+
+            if resp is not None and resp.status_code == 200:
                 chunks = []
                 total_size = 0
                 max_bytes = 25 * 1024 * 1024
@@ -113,7 +132,9 @@ def get_or_cache_remote_image(url: str, timeout: int = 20) -> Optional[bytes]:
                     total_size += len(chunk)
                     if total_size > max_bytes:
                         log.warning("Remote image %s exceeded 25MB safety ceiling, aborting", url)
+                        resp.close()
                         return None
+                resp.close()
                 data = b"".join(chunks)
                 if len(data) > 100:
                     _IMAGE_MEMORY_CACHE[url] = data
@@ -124,6 +145,8 @@ def get_or_cache_remote_image(url: str, timeout: int = 20) -> Optional[bytes]:
                         except Exception:
                             pass
                     return data
+            elif resp is not None:
+                resp.close()
         except Exception as e:
             log.warning("Remote image cache fetch failed (%s): %s", url, e)
 
