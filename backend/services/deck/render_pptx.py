@@ -61,7 +61,7 @@ def _style(shape, p):
     _no_effects(shape)
 
 
-def _draw(shapes, p, ids):
+def _draw(shapes, p, ids, owner_user_id: str | None = None):
     k = p["k"]
     if k in ("rect", "ellipse"):
         r = p.get("r", 0) if k == "rect" else 0
@@ -108,7 +108,7 @@ def _draw(shapes, p, ids):
         f.color.rgb = _rgb(p["color"])
         ids.append(tb.shape_id)
     elif k == "image":
-        raw = images.image_bytes(p.get("src"))
+        raw = images.image_bytes(p.get("src"), owner_user_id=owner_user_id)
         conv = images.to_png_or_jpeg(raw) if raw else None
         if not conv:
             return  # no fallback image: leave the area empty, the layout still stands
@@ -255,7 +255,7 @@ def _transition(slide, kind):
     slide._element.append(etree.fromstring(xml))
 
 
-def scenes_to_pptx(scenes: list[dict], title: str, animations: bool = True) -> bytes:
+def scenes_to_pptx(scenes: list[dict], title: str, animations: bool = True, owner_user_id: str | None = None) -> bytes:
     prs = Pptx()
     prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
     prs.core_properties.title = title[:200]
@@ -277,11 +277,11 @@ def scenes_to_pptx(scenes: list[dict], title: str, animations: bool = True) -> b
             if animated and len(drawn) > 1:
                 grp = s.shapes.add_group_shape()
                 for p in drawn:
-                    _draw(grp.shapes, p, [])
+                    _draw(grp.shapes, p, [], owner_user_id=owner_user_id)
                 ids.append(grp.shape_id)
             else:
                 for p in drawn:
-                    _draw(s.shapes, p, ids)
+                    _draw(s.shapes, p, ids, owner_user_id=owner_user_id)
             for p in charts:
                 ids.append(_chart(s, p))
             if animated and ids:

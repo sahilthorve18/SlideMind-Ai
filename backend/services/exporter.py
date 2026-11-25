@@ -17,8 +17,8 @@ def _resolve_image_stream(image_meta):
 
 def export_pptx(presentation) -> bytes:
     animations = os.getenv("PPTX_ANIMATIONS", "1") != "0"
-    return scenes_to_pptx(build_scenes(presentation), presentation.title or "Presentation", animations)
+    return scenes_to_pptx(build_scenes(presentation), presentation.title or "Presentation", animations, owner_user_id=presentation.user_id)
 
 
 def export_pdf(presentation) -> bytes:
-    return scenes_to_pdf(build_scenes(presentation), presentation.title or "Presentation")
+    return scenes_to_pdf(build_scenes(presentation), presentation.title or "Presentation", owner_user_id=presentation.user_id)

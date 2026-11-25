@@ -29,16 +29,19 @@ NO_RETRIEVAL_NOTE = (
 )
 
 
-def build_system_prompt(sources=None, retrieval_failed=False) -> str:
+def build_system_prompt(sources=None, retrieval_failed: bool = False) -> str:
+    from services.prompt_safety import sanitize_prompt_label, sanitize_untrusted_text, wrap_untrusted
+
     prompt = SYSTEM_PROMPT
     if sources:
         blocks = []
         for i, s in enumerate(sources, start=1):
-            where = s["filename"] + (f", p.{s['page_number']}" if s.get("page_number") else "")
+            fname = sanitize_prompt_label(s["filename"])
+            where = fname + (f", p.{s['page_number']}" if s.get("page_number") else "")
             if s.get("section_heading"):
-                where += f", section: {s['section_heading']}"
-            blocks.append(f"[{i}] ({where})\n{s['text']}")
-        prompt += GROUNDING_RULES + "\n<sources>\n" + "\n\n".join(blocks) + "\n</sources>"
+                where += f", section: {sanitize_prompt_label(s['section_heading'])}"
+            blocks.append(f"[{i}] ({where})\n{sanitize_untrusted_text(s['text'])}")
+        prompt += GROUNDING_RULES + "\n" + wrap_untrusted("sources", "\n\n".join(blocks))
     elif retrieval_failed:
         prompt += NO_RETRIEVAL_NOTE
     return prompt

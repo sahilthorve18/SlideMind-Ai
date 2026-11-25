@@ -9,6 +9,10 @@ import zipfile
 from dataclasses import dataclass
 
 ALLOWED_TYPES = {"pdf", "docx", "pptx", "txt"}
+MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024  # 50 MB decompressed ceiling against ZIP bombs
+MAX_ZIP_ENTRIES = 2000
+MAX_PDF_PAGES = 200
+MAX_EXTRACTED_CHARS = 500_000
 
 
 class ExtractionError(Exception):
@@ -35,14 +39,30 @@ def detect_type(filename: str, data: bytes) -> str:
         if not data.startswith(b"PK"):
             raise ExtractionError(f"This file is not a valid {ext.upper()}.")
         try:
-            names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                infos = zf.infolist()
+                if len(infos) > MAX_ZIP_ENTRIES:
+                    raise ExtractionError("Archive contains too many entries.")
+                total_uncompressed = 0
+                for zi in infos:
+                    if zi.flag_bits & 0x1:
+                        raise ExtractionError("Encrypted archives are not supported.")
+                    total_uncompressed += zi.file_size
+                    if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
+                        raise ExtractionError("Archive exceeds safe uncompressed size limit.")
+                names = [zi.filename for zi in infos]
         except zipfile.BadZipFile:
             raise ExtractionError(f"This file is not a valid {ext.upper()}.")
         marker = "word/document.xml" if ext == "docx" else "ppt/presentation.xml"
         if marker not in names:
             raise ExtractionError(f"This file is not a valid {ext.upper()}.")
-    if ext == "txt" and b"\x00" in data[:4096]:
-        raise ExtractionError("This file does not look like plain text.")
+    if ext == "txt":
+        if b"\x00" in data:
+            raise ExtractionError("This file does not look like plain text.")
+        sample = data[:8192]
+        non_text = sum(1 for b in sample if b < 9 or (13 < b < 32 and b != 27))
+        if sample and (non_text / len(sample)) > 0.15:
+            raise ExtractionError("This file does not look like plain text.")
     return ext
 
 
@@ -55,7 +75,9 @@ def _pdf(data: bytes):
         raise ExtractionError("Could not read this PDF.")
     if doc.needs_pass:
         raise ExtractionError("Password-protected PDFs are not supported.")
-    segments, heading = [], None
+    if len(doc) > MAX_PDF_PAGES:
+        raise ExtractionError(f"PDF has {len(doc)} pages; maximum supported is {MAX_PDF_PAGES} pages.")
+    segments, heading, total_chars = [], None, 0
     for pno, page in enumerate(doc, start=1):
         sizes = []
         lines = []
@@ -68,6 +90,9 @@ def _pdf(data: bytes):
                 size = max(s["size"] for s in spans)
                 sizes.append(size)
                 lines.append((text, size))
+                total_chars += len(text)
+                if total_chars > MAX_EXTRACTED_CHARS:
+                    raise ExtractionError("PDF contains too much extracted text to process safely.")
         body = statistics.median(sizes) if sizes else 0
         buf = []
         for text, size in lines:

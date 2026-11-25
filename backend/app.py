@@ -82,9 +82,11 @@ def create_app(overrides: dict | None = None) -> Flask:
     app.add_url_rule("/api/user/export-data", view_func=export_user_data, methods=["GET"])
     app.add_url_rule("/api/user/delete-account", view_func=delete_user_account, methods=["POST"])
 
-    # Chat triggers paid/limited Gemini calls (and multi-step tool loops): throttle harder than the default.
+    # Chat and uploads trigger paid/limited Gemini calls or disk/DB writes: throttle harder than default.
     limiter.limit(app.config.get("CHAT_RATE_LIMIT", "15 per minute"))(app.view_functions["conversations.chat"])
     limiter.limit(app.config.get("GUEST_RATE_LIMIT", "5 per hour"))(app.view_functions["auth.guest_login"])
+    limiter.limit(app.config.get("UPLOAD_RATE_LIMIT", "15 per minute"))(app.view_functions["documents.upload"])
+    limiter.limit(app.config.get("UPLOAD_RATE_LIMIT", "15 per minute"))(app.view_functions["assets.upload_asset"])
 
     @app.after_request
     def set_security_headers(response):

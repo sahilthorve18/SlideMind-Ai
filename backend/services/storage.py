@@ -167,7 +167,7 @@ def save_asset_file(
     if not ext:
         ext = ".png" if "png" in content_type else ".jpg"
 
-    safe_name = re.sub(r"[^\w\-.]", "_", original_filename)[:64]
+    safe_name = re.sub(r"[^\w\-.]", "_", os.path.basename(original_filename.replace("\\", "/")))[:64] or "asset.png"
     storage_key = f"{user_id}/{content_hash[:16]}_{safe_name}"
 
     if provider == "s3":
@@ -288,21 +288,52 @@ def delete_asset_file(storage_key: str, provider: str = "local") -> bool:
 # Image Metadata Extraction (Dimensions, Aspect Ratio)
 # ---------------------------------------------------------------------------
 
+MAX_IMAGE_PIXELS = 25_000_000
+ALLOWED_RASTER_MIMES = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
+
+
+def validate_raster_image_bytes(data: bytes) -> Dict[str, Any]:
+    """Strictly verify raster image bytes using Pillow (rejects SVGs, HTML/JS, corrupt binaries, and image bombs)."""
+    if not data:
+        raise ValueError("Image data is empty.")
+    prev_max = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            fmt = (img.format or "").upper()
+            if fmt not in ALLOWED_RASTER_MIMES:
+                raise ValueError(f"Unsupported or disallowed image format: {fmt or 'unknown'}")
+            img.verify()
+        with Image.open(io.BytesIO(data)) as img2:
+            w, h = img2.size
+            if w <= 0 or h <= 0 or (w * h) > MAX_IMAGE_PIXELS:
+                raise ValueError("Image dimensions exceed safe processing limits.")
+            return {
+                "width": w,
+                "height": h,
+                "aspect_ratio": round(w / max(h, 1), 3),
+                "format": fmt.lower(),
+                "mime_type": ALLOWED_RASTER_MIMES[fmt],
+            }
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError("File is not a valid raster image.") from e
+    finally:
+        Image.MAX_IMAGE_PIXELS = prev_max
+
+
 def inspect_image_bytes(data: bytes) -> Dict[str, Any]:
     """Inspects raw image bytes with Pillow to extract dimensions, aspect ratio,
     and format safely without executing arbitrary image code.
     """
     try:
-        with Image.open(io.BytesIO(data)) as img:
-            w, h = img.size
-            fmt = (img.format or "PNG").lower()
-            aspect = round(w / max(h, 1), 3)
-            return {
-                "width": w,
-                "height": h,
-                "aspect_ratio": aspect,
-                "format": fmt,
-            }
+        return validate_raster_image_bytes(data)
     except Exception as e:
         log.warning("Failed to inspect image dimensions: %s", e)
         return {

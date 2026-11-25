@@ -9,12 +9,15 @@ import hashlib
 import sqlalchemy as sa
 
 from database import db
-from models import Document, DocumentChunk
+from models import Document, DocumentChunk, User
 from rag import embed
 from rag.chunk import chunk_segments
 from rag.extract import extract
+from services.prompt_safety import sanitize_filename
 
 MAX_CHUNKS = 400  # keeps indexing inside free-tier time/memory limits
+MAX_DOCS_PER_USER = 100
+GUEST_MAX_DOCS = 10
 
 
 class DocumentTooLarge(Exception):
@@ -27,7 +30,8 @@ def _is_pg() -> bool:
 
 def index_document(user_id: str, filename: str, data: bytes) -> tuple[Document, bool]:
     """Validate, extract, chunk, embed and store. Returns (document, duplicate)."""
-    ftype, segments, pages = extract(filename, data)  # raises ExtractionError
+    safe_filename = sanitize_filename(filename, fallback="document")
+    ftype, segments, pages = extract(safe_filename, data)  # raises ExtractionError
     digest = hashlib.sha256(data).hexdigest()
 
     existing = Document.query.filter_by(user_id=user_id, content_hash=digest).first()
@@ -37,6 +41,11 @@ def index_document(user_id: str, filename: str, data: bytes) -> tuple[Document, 
         db.session.delete(existing)
         db.session.commit()
 
+    u = db.session.get(User, user_id)
+    cap = GUEST_MAX_DOCS if (u and getattr(u, "is_guest", False)) else MAX_DOCS_PER_USER
+    if Document.query.filter_by(user_id=user_id).count() >= cap:
+        raise DocumentTooLarge(f"Document upload limit reached ({cap} files). Delete older documents to upload more.")
+
     chunks = chunk_segments(segments)
     if len(chunks) > MAX_CHUNKS:
         raise DocumentTooLarge(f"This document is too large to index (over {MAX_CHUNKS} sections). Try a shorter file.")
@@ -44,7 +53,7 @@ def index_document(user_id: str, filename: str, data: bytes) -> tuple[Document, 
     # Embed first so a failure leaves nothing half-indexed.
     vectors = embed.embed_texts([c.text for c in chunks], "RETRIEVAL_DOCUMENT")
 
-    doc = Document(user_id=user_id, filename=filename[:255], file_type=ftype, size_bytes=len(data),
+    doc = Document(user_id=user_id, filename=safe_filename[:255], file_type=ftype, size_bytes=len(data),
                    content_hash=digest, page_count=pages, status="indexed")
     db.session.add(doc)
     db.session.flush()

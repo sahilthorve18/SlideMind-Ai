@@ -10,6 +10,7 @@ from flask import Blueprint, Response, g, request, send_file
 from database import db
 from models import VisualAsset
 from services import storage
+from services.prompt_safety import sanitize_filename
 from utils.http import fail, json_body, ok, require_auth
 
 log = logging.getLogger(__name__)
@@ -21,7 +22,6 @@ ALLOWED_IMAGE_TYPES = {
     "image/jpg": "jpeg",
     "image/png": "png",
     "image/webp": "webp",
-    "image/svg+xml": "svg",
     "image/gif": "gif",
 }
 
@@ -60,19 +60,18 @@ def upload_asset():
     if not f or not f.filename:
         return fail("invalid_request", "Attach a valid image file in the 'file' field.", 400)
 
-    # Validate mime type
+    safe_original_name = sanitize_filename(f.filename, fallback="asset.png")
+
+    # Validate mime type header / extension pre-check (SVG explicitly disallowed to prevent XSS)
     mime = (f.mimetype or "").lower()
     if mime not in ALLOWED_IMAGE_TYPES:
-        # Fall back to extension inspection
-        ext = os.path.splitext(f.filename)[1].lower()
+        ext = os.path.splitext(safe_original_name)[1].lower()
         if ext in (".jpg", ".jpeg"):
             mime = "image/jpeg"
         elif ext == ".png":
             mime = "image/png"
         elif ext == ".webp":
             mime = "image/webp"
-        elif ext == ".svg":
-            mime = "image/svg+xml"
         elif ext == ".gif":
             mime = "image/gif"
         else:
@@ -86,6 +85,13 @@ def upload_asset():
     if len(data) > max_mb * 1024 * 1024:
         return fail("file_too_large", f"Image exceeds maximum size of {max_mb}MB.", 413)
 
+    # Verify actual image bytes with Pillow before persisting to storage
+    try:
+        img_info = storage.validate_raster_image_bytes(data)
+    except ValueError as e:
+        return fail("unsupported_media_type", str(e), 422)
+
+    mime = img_info.get("mime_type") or mime
     content_hash = hashlib.sha256(data).hexdigest()
 
     # Check for deduplication
@@ -97,7 +103,7 @@ def upload_asset():
     try:
         storage_key, provider = storage.save_asset_file(
             user_id=g.user.id,
-            original_filename=f.filename,
+            original_filename=safe_original_name,
             data=data,
             content_type=mime,
         )
@@ -105,16 +111,13 @@ def upload_asset():
         log.error("Failed storing asset file: %s", e)
         return fail("storage_error", "Failed to store image in persistent storage.", 500)
 
-    # Inspect dimensions
-    img_info = storage.inspect_image_bytes(data)
-
     # Extract tags & classification
-    meta = storage.extract_visual_metadata_and_tags(f.filename, data, img_info)
+    meta = storage.extract_visual_metadata_and_tags(safe_original_name, data, img_info)
 
     asset = VisualAsset(
         user_id=g.user.id,
         filename=os.path.basename(storage_key),
-        original_filename=f.filename,
+        original_filename=safe_original_name,
         file_type=img_info.get("format", ALLOWED_IMAGE_TYPES.get(mime, "png")),
         mime_type=mime,
         size_bytes=len(data),
@@ -124,7 +127,7 @@ def upload_asset():
         width=img_info.get("width"),
         height=img_info.get("height"),
         aspect_ratio=img_info.get("aspect_ratio"),
-        title=meta.get("title") or f.filename,
+        title=meta.get("title") or safe_original_name,
         description=meta.get("description"),
         tags=meta.get("tags") or [],
         visual_category=meta.get("category", "general"),
@@ -194,9 +197,12 @@ def view_asset(asset_id: str):
         log.error("Failed reading asset %s: %s", asset_id, e)
         return fail("storage_error", "Failed retrieving image from storage.", 500)
 
+    safe_disp = sanitize_filename(asset.original_filename, fallback="asset")
     resp = Response(data, mimetype=asset.mime_type or "image/png")
     resp.headers["Cache-Control"] = "private, max-age=86400"
-    resp.headers["Content-Disposition"] = f'inline; filename="{asset.original_filename}"'
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Content-Security-Policy"] = "default-src 'none'"
+    resp.headers["Content-Disposition"] = f'inline; filename="{safe_disp}"'
     return resp
 
 

@@ -39,6 +39,7 @@ class Config:
     MAX_CONTENT_LENGTH = MAX_UPLOAD_MB * 1024 * 1024
     RATELIMIT_DEFAULT = os.getenv("RATELIMIT_DEFAULT", "120 per minute")
     GUEST_RATE_LIMIT = os.getenv("GUEST_RATE_LIMIT", "5 per hour")
+    UPLOAD_RATE_LIMIT = os.getenv("UPLOAD_RATE_LIMIT", "15 per minute")
     RATELIMIT_STORAGE_URI = os.getenv("REDIS_URL", os.getenv("RATELIMIT_STORAGE_URI", "memory://"))
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")

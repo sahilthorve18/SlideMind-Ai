@@ -39,7 +39,7 @@ def _col(h):
     return HexColor("#" + h)
 
 
-def scenes_to_pdf(scenes: list[dict], title: str) -> bytes:
+def scenes_to_pdf(scenes: list[dict], title: str, owner_user_id: str | None = None) -> bytes:
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(13.333 * PT, 7.5 * PT))
     c.setTitle(title[:200])
@@ -109,7 +109,7 @@ def scenes_to_pdf(scenes: list[dict], title: str) -> bytes:
                         xx += p["w"] * PT - wd
                     c.drawString(xx, yy, ln)
             elif k == "image":
-                raw = images.image_bytes(p.get("src"))
+                raw = images.image_bytes(p.get("src"), owner_user_id=owner_user_id)
                 conv = images.to_png_or_jpeg(raw) if raw else None
                 if not conv:
                     continue

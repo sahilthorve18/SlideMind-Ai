@@ -279,7 +279,7 @@ export default function VisualAssetEditor({
         type="file"
         ref={fileInputRef}
         onChange={handleFileUpload}
-        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+        accept="image/png,image/jpeg,image/webp,image/gif"
         className="hidden"
       />
 
