@@ -249,8 +249,17 @@ def test_ssrf_redirect_and_metadata_url_blocked(client, app, monkeypatch):
         db.session.commit()
         pid = p.id
 
-    # 1. Literal internal / metadata URLs blocked upfront on select_slide_visual
-    for bad_url in ("http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:5000/secret.png", "http://localhost/x.png"):
+    # 1. Literal internal / metadata / decimal / hex / octal IP URLs blocked upfront
+    obfuscated_urls = (
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:5000/secret.png",
+        "http://localhost/x.png",
+        "http://2130706433/secret.png",
+        "http://0x7f000001/secret.png",
+        "http://0177.0.0.1/secret.png",
+    )
+    for bad_url in obfuscated_urls:
+        assert storage.is_safe_remote_url(bad_url) is False
         r = client.post(f"/api/presentation/{pid}/slide/1/visual/select", headers=h, json={"image": {"url": bad_url}})
         assert r.status_code == 400
 
@@ -402,4 +411,31 @@ def test_poisoned_pdf_end_to_end_cannot_inject_revenue_99m(app, monkeypatch):
         p = db.session.get(Presentation, pid)
         pptx_bytes = exporter.export_pptx(p)
         assert b"99M" not in pptx_bytes
+
+
+def test_image_cache_bounded_lru_and_disk_pruning(tmp_path, monkeypatch):
+    from services import storage
+
+    storage._IMAGE_MEMORY_CACHE.clear()
+    monkeypatch.setattr(storage, "MAX_MEMORY_CACHE_ITEMS", 3)
+    monkeypatch.setattr(storage, "MAX_MEMORY_CACHE_BYTES", 1000)
+
+    for i in range(5):
+        storage._memory_cache_put(f"https://example.com/{i}.png", b"x" * 200)
+    assert len(storage._IMAGE_MEMORY_CACHE) == 3
+    # Oldest (0, 1) evicted, newest (2, 3, 4) kept
+    assert "https://example.com/0.png" not in storage._IMAGE_MEMORY_CACHE
+    assert "https://example.com/4.png" in storage._IMAGE_MEMORY_CACHE
+
+    # Disk cache pruning keeps <= MAX_DISK_CACHE_FILES
+    monkeypatch.setattr(storage, "MAX_DISK_CACHE_FILES", 2)
+    cache_dir = str(tmp_path)
+    for i in range(4):
+        fp = tmp_path / f"img_{i}.bin"
+        fp.write_bytes(b"imgdata")
+        os.utime(fp, (1000 + i, 1000 + i))
+    storage._prune_disk_cache(cache_dir)
+    remaining = sorted(p.name for p in tmp_path.iterdir())
+    assert remaining == ["img_2.bin", "img_3.bin"]
+    storage._IMAGE_MEMORY_CACHE.clear()
 

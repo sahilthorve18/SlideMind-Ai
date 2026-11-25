@@ -52,6 +52,23 @@ def extract_asset_id_from_url(url: str) -> str | None:
     return asset_id or None
 
 
+def is_noncanonical_ip_host(host: str) -> bool:
+    """Detect obfuscated IPv4 hostnames (decimal 2130706433, hex 0x7f000001, octal 0177.0.0.1, shorthand 127.1)."""
+    import ipaddress
+
+    h = (host or "").strip().lower()
+    if not re.fullmatch(r"(?:\d+|0x[0-9a-f]+)(?:\.(?:\d+|0x[0-9a-f]+)){0,3}", h, re.I):
+        return False
+    parts = h.split(".")
+    if len(parts) != 4 or any(p.startswith("0x") or (len(p) > 1 and p.startswith("0")) for p in parts):
+        return True
+    try:
+        ipaddress.ip_address(h)
+        return False
+    except ValueError:
+        return True
+
+
 def is_safe_visual_url(url: str | None) -> bool:
     """Validate that a slide image URL is a public http(s) URL or local /api/assets/<id>/view path."""
     import ipaddress
@@ -67,7 +84,7 @@ def is_safe_visual_url(url: str | None) -> bool:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return False
     host = parsed.hostname.lower()
-    if host in ("localhost", "metadata.google.internal", "0.0.0.0"):
+    if host in ("localhost", "metadata.google.internal", "0.0.0.0") or is_noncanonical_ip_host(host):
         return False
     try:
         ip = ipaddress.ip_address(host)

@@ -1,17 +1,40 @@
 """Hard checks on slide specs. A failure triggers one repair pass, then a safe fallback built only from real facts."""
+import logging
 import re
 
 from .blocks import block_text, normalize_blocks
+
+log = logging.getLogger(__name__)
 
 PLANNING_WORDS = ("slide goal", "purpose:", "this slide will", "this slide shows", "talking point", "placeholder", "lorem", "tbd", "todo",
                   "insert ", "your text here", "example text", "[")
 KNOWN_FILLER = ("10x", "99.4%", "0s friction", "slidemind next-gen", "design standard")
 AUTO_LABEL = re.compile(r"\b(Pillar|Phase|Stage|Step|Point|Item|Feature)\s+\d\b", re.I)
-NUM = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?(?:[%kmbtxKMBTX+])?)(?![\w])")
+NUM = re.compile(
+    r"(?<![\w.])(\d[\d,]*(?:\.\d+)?(?:\s*(?:percent|pct|thousand|million|billion|trillion)\b|[%xX+]|[kmbtKMBT](?![a-zA-Z0-9_]))?)(?![\w])",
+    re.I,
+)
+_NUM_MULT = {
+    "k": 1e3, "thousand": 1e3,
+    "m": 1e6, "million": 1e6,
+    "b": 1e9, "billion": 1e9,
+    "t": 1e12, "trillion": 1e12,
+}
 
 
 def _norm_num(s: str) -> str:
-    return s.replace(",", "").rstrip("%+").rstrip(".").lower()
+    raw = str(s).strip().lower().replace(",", "").rstrip(".")
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(percent|pct|thousand|million|billion|trillion|[%kmbtx+])?", raw)
+    if not m:
+        return raw.rstrip("%+.")
+    val_str, suf = m.group(1), (m.group(2) or "").strip()
+    if suf == "x":
+        val = float(val_str)
+        return f"{int(round(val))}x" if abs(val - round(val)) < 1e-6 else f"{val:g}x"
+    val = float(val_str) * _NUM_MULT.get(suf, 1.0)
+    if abs(val - round(val)) < 1e-6:
+        return str(int(round(val)))
+    return f"{val:g}"
 
 
 def fact_number_pool(facts: list[dict], user_text: str = "") -> set[str]:
@@ -35,32 +58,37 @@ def untraced_numbers(text: str, pool: set[str], allow_small: bool = True) -> lis
 
 
 def filter_grounded_facts(facts: list[dict], user_text: str, passages: list[dict], web: str) -> list[dict]:
-    """Drop facts whose numbers (>12) contradict or spoof their attributed source ('user', 'P#', 'W')."""
-    all_passages = " ".join(p.get("text", "") for p in (passages or []))
+    """Drop facts whose numbers (>12) contradict or spoof their attributed source ('user', exact 'P#' id, or 'W').
+    Expands suffixes/words by value (e.g., 2.5M == 2.5 million, $1.2k == $1,200, 30% == 30 percent) and keeps 'general' facts."""
+    p_map = {p.get("id"): p.get("text", "") for p in (passages or []) if isinstance(p, dict) and p.get("id")}
+    all_passages = " ".join(p_map.values())
     user_pool = {_norm_num(m) for m in NUM.findall(user_text or "")}
     web_pool = {_norm_num(m) for m in NUM.findall(web or "")}
     passage_pool = {_norm_num(m) for m in NUM.findall(all_passages)}
-    has_material = bool(passages or (web and web.strip()))
 
     kept = []
     for f in facts:
         src = str(f.get("source") or "general").strip()
         text = f"{f.get('claim', '')} {f.get('number') or ''}"
         nums = untraced_numbers(text, set(), allow_small=True)
-        if nums:
+        if nums and src != "general":
             norm_nums = [_norm_num(x) for x in nums]
-            if src == "user" and any(n not in user_pool for n in norm_nums):
-                continue
-            if src == "W" and any(n not in web_pool for n in norm_nums):
-                continue
-            if src.startswith("P") and any(n not in passage_pool for n in norm_nums):
-                continue
-            if src not in ("user", "W", "general") and not src.startswith("P"):
+            drop_reason = None
+            if src == "user":
+                if any(n not in user_pool for n in norm_nums):
+                    drop_reason = "not in user request"
+            elif src == "W":
+                if any(n not in web_pool for n in norm_nums):
+                    drop_reason = "not in web text"
+            elif src in p_map:
+                if any(n not in passage_pool for n in norm_nums):
+                    drop_reason = f"not in passage pool for {src}"
+            else:
                 if any(n not in (user_pool | passage_pool | web_pool) for n in norm_nums):
-                    continue
-            if src == "general" and has_material:
-                if any(n not in (user_pool | passage_pool | web_pool) for n in norm_nums):
-                    continue
+                    drop_reason = f"unrecognized source '{src}'"
+            if drop_reason:
+                log.warning("Dropped ungrounded fact (source=%s, reason=%s): %s", src, drop_reason, f.get("claim", "")[:140])
+                continue
         kept.append(f)
     return kept
 

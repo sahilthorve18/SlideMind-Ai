@@ -369,3 +369,32 @@ def test_critique_repair_parallel_scoring_and_validator_guard(app, scripted, mon
         s3_after = next(s for s in p.slides if s.position == 3)
         assert s3_after.title == "Three roles coordinate every lab repair step"
         assert p.settings["visual_critique"]["repaired_slides"] == [3]
+
+
+def test_filter_grounded_facts_expands_suffixes_and_keeps_general():
+    """Value-based matching handles 2.5M == 2.5 million, $1.2k == $1,200, 30% == 30 percent, exact passage IDs, and keeps general facts."""
+    passages = [{"id": "P1", "text": "The platform reached 2.5 million users while costs fell 30 percent on a $1,200 budget."}]
+    candidate_facts = [
+        {"id": "F1", "claim": "Served 2.5M users globally.", "number": "2.5M", "source": "P1", "kind": "metric"},
+        {"id": "F2", "claim": "Costs fell 30% year over year.", "number": "30%", "source": "P1", "kind": "metric"},
+        {"id": "F3", "claim": "Initial budget was $1.2k total.", "number": "$1.2k", "source": "P1", "kind": "metric"},
+        {"id": "F4", "claim": "Revenue reached 99M last quarter.", "number": "99M", "source": "P1", "kind": "metric"},
+        {"id": "F5", "claim": "Revenue reached 99M from fake passage prefix.", "number": "99M", "source": "P_FAKE", "kind": "metric"},
+        {"id": "F6", "claim": "Light travels at 299,792 km/s in vacuum.", "number": "299,792", "source": "general", "kind": "fact"},
+    ]
+    kept = validators.filter_grounded_facts(candidate_facts, "Platform growth", passages, "")
+    kept_ids = [f["id"] for f in kept]
+    assert kept_ids == ["F1", "F2", "F3", "F6"]
+
+    # Validate slide using normalized form against passage-worded fact
+    passage_facts = [{"id": "F1", "claim": "Reached 2.5 million users; costs fell 30 percent on $1,200.", "number": None, "source": "P1", "kind": "metric"}]
+    slide = {
+        "kind": "content",
+        "title": "Platform scales efficiently on lean budget",
+        "blocks": [{"type": "stat_row", "items": [
+            {"value": "2.5M", "label": "Users"},
+            {"value": "30%", "label": "Cost reduction"},
+            {"value": "$1.2k", "label": "Budget"},
+        ]}],
+    }
+    assert validators.validate_slide(slide, passage_facts, "Platform growth") == []

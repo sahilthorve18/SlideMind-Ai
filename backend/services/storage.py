@@ -6,17 +6,20 @@ Supports:
 3. Cryptographically signed HMAC-SHA256 URLs for private user asset rendering in Google Slides, PPTX, and web preview.
 """
 import base64
+from collections import OrderedDict
 import hashlib
 import hmac
 import io
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import current_app
 from PIL import Image
+from services.prompt_safety import is_noncanonical_ip_host
 
 log = logging.getLogger(__name__)
 
@@ -30,12 +33,72 @@ def _get_config_val(key: str, default: Any = "") -> Any:
     return os.getenv(key, default)
 
 
-_IMAGE_MEMORY_CACHE: Dict[str, bytes] = {}
+MAX_MEMORY_CACHE_ITEMS = 20
+MAX_MEMORY_CACHE_BYTES = 32 * 1024 * 1024
+MAX_DISK_CACHE_FILES = 100
+MAX_DISK_CACHE_BYTES = 128 * 1024 * 1024
+
+_IMAGE_MEMORY_CACHE: "OrderedDict[str, bytes]" = OrderedDict()
+_IMAGE_CACHE_LOCK = threading.Lock()
+
+
+def _memory_cache_get(url: str) -> Optional[bytes]:
+    with _IMAGE_CACHE_LOCK:
+        data = _IMAGE_MEMORY_CACHE.get(url)
+        if data is not None:
+            _IMAGE_MEMORY_CACHE.move_to_end(url)
+        return data
+
+
+def _memory_cache_put(url: str, data: bytes) -> None:
+    if len(data) > (MAX_MEMORY_CACHE_BYTES // 2):
+        return  # skip caching single huge images so normal slides aren't evicted
+    with _IMAGE_CACHE_LOCK:
+        if url in _IMAGE_MEMORY_CACHE:
+            _IMAGE_MEMORY_CACHE.move_to_end(url)
+            _IMAGE_MEMORY_CACHE[url] = data
+        else:
+            _IMAGE_MEMORY_CACHE[url] = data
+        total_bytes = sum(len(v) for v in _IMAGE_MEMORY_CACHE.values())
+        while len(_IMAGE_MEMORY_CACHE) > MAX_MEMORY_CACHE_ITEMS or total_bytes > MAX_MEMORY_CACHE_BYTES:
+            _, evicted = _IMAGE_MEMORY_CACHE.popitem(last=False)
+            total_bytes -= len(evicted)
+
+
+def _prune_disk_cache(cache_dir: str) -> None:
+    try:
+        entries = []
+        total_bytes = 0
+        for name in os.listdir(cache_dir):
+            if not name.endswith(".bin"):
+                continue
+            path = os.path.join(cache_dir, name)
+            try:
+                st = os.stat(path)
+                entries.append((st.st_mtime, st.st_size, path))
+                total_bytes += st.st_size
+            except OSError:
+                continue
+        if len(entries) <= MAX_DISK_CACHE_FILES and total_bytes <= MAX_DISK_CACHE_BYTES:
+            return
+        entries.sort(key=lambda x: x[0])  # oldest first
+        count = len(entries)
+        for _, size, path in entries:
+            if count <= MAX_DISK_CACHE_FILES and total_bytes <= MAX_DISK_CACHE_BYTES:
+                break
+            try:
+                os.remove(path)
+                count -= 1
+                total_bytes -= size
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 def is_safe_remote_url(url: str) -> bool:
     """Security Guard: Blocks SSRF attacks against internal network, localhost,
-    and cloud instance metadata endpoints (169.254.169.254, metadata.google.internal).
+    non-canonical IP encodings, and cloud instance metadata endpoints (169.254.169.254, metadata.google.internal).
     """
     import ipaddress
     import socket
@@ -50,7 +113,7 @@ def is_safe_remote_url(url: str) -> bool:
             return False
 
         lower_host = hostname.lower()
-        if lower_host in ("localhost", "127.0.0.1", "::1", "0.0.0.0", "metadata.google.internal"):
+        if lower_host in ("localhost", "127.0.0.1", "::1", "0.0.0.0", "metadata.google.internal") or is_noncanonical_ip_host(lower_host):
             return False
 
         # Resolve IP addresses and verify they are strictly public
@@ -74,8 +137,9 @@ def get_or_cache_remote_image(url: str, timeout: int = 20) -> Optional[bytes]:
     """
     if not url:
         return None
-    if url in _IMAGE_MEMORY_CACHE:
-        return _IMAGE_MEMORY_CACHE[url]
+    cached = _memory_cache_get(url)
+    if cached is not None:
+        return cached
 
     # Validate remote URL safety against SSRF
     if not is_safe_remote_url(url):
@@ -91,7 +155,7 @@ def get_or_cache_remote_image(url: str, timeout: int = 20) -> Optional[bytes]:
             with open(cache_file, "rb") as f:
                 data = f.read()
                 if len(data) > 100:
-                    _IMAGE_MEMORY_CACHE[url] = data
+                    _memory_cache_put(url, data)
                     return data
     except Exception as e:
         log.debug("Disk cache check failed: %s", e)
@@ -137,11 +201,12 @@ def get_or_cache_remote_image(url: str, timeout: int = 20) -> Optional[bytes]:
                 resp.close()
                 data = b"".join(chunks)
                 if len(data) > 100:
-                    _IMAGE_MEMORY_CACHE[url] = data
+                    _memory_cache_put(url, data)
                     if cache_file:
                         try:
                             with open(cache_file, "wb") as f:
                                 f.write(data)
+                            _prune_disk_cache(cache_dir)
                         except Exception:
                             pass
                     return data
