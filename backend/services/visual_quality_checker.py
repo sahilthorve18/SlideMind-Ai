@@ -6,12 +6,17 @@ and multimodal inspection for overflow, contrast, whitespace balance, and layout
 
 import io
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 import fitz  # PyMuPDF
 from PIL import Image, ImageStat
+from database import db
 from services import exporter, gemini
 
 log = logging.getLogger(__name__)
+
+REPAIR_SCORE_THRESHOLD = 75
+CRITIQUE_MAX_WORKERS = 4
 
 
 def render_presentation_slides_to_images(presentation) -> List[Dict[str, Any]]:
@@ -91,7 +96,8 @@ def critique_slide_with_vision(image_bytes: bytes, slide_title: str, topic: str)
     """Uses Gemini Vision to evaluate a rendered slide PNG for layout defects, overflow, and readability."""
     from flask import current_app
     if not current_app or not current_app.config.get("GEMINI_API_KEY"):
-        return {"score": 85, "passed": True, "problems": [], "fix_instruction": ""}
+        log.debug("Vision critique skipped for '%s': GEMINI_API_KEY not configured.", slide_title)
+        return {"score": None, "passed": None, "status": "skipped", "problems": [], "fix_instruction": ""}
 
     prompt = (
         f"You are a master presentation art director evaluating a rendered slide.\n"
@@ -105,37 +111,145 @@ def critique_slide_with_vision(image_bytes: bytes, slide_title: str, topic: str)
     )
     try:
         res = gemini.generate_json(prompt, temperature=0.2, images=[image_bytes])
+        raw_score = res.get("score")
+        if raw_score is None:
+            raise ValueError("Vision critique returned no score")
+        score = max(0, min(100, int(raw_score)))
+        passed = bool(res.get("passed", score >= REPAIR_SCORE_THRESHOLD)) and score >= REPAIR_SCORE_THRESHOLD
         return {
-            "score": int(res.get("score", 85)),
-            "passed": bool(res.get("passed", True)),
-            "problems": list(res.get("problems", [])),
+            "score": score,
+            "passed": passed,
+            "status": "ok",
+            "problems": [str(p) for p in (res.get("problems") or [])],
             "fix_instruction": str(res.get("fix_instruction", "")),
         }
     except Exception as e:
-        log.warning("Vision critique unavailable: %s", e)
-        return {"score": 85, "passed": True, "problems": [], "fix_instruction": ""}
+        log.warning("Vision critique failed for '%s': %s", slide_title, e)
+        return {"score": None, "passed": None, "status": "error", "problems": [], "fix_instruction": ""}
+
+
+def _select_slides_for_critique(presentation, rendered_images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Selects slides most likely to exhibit visual defects so we don't waste Vision calls on trivial slides."""
+    slides_by_pos = {s.position: s for s in presentation.slides}
+    total = len(rendered_images)
+    selected = []
+    for item in rendered_images:
+        sn = item["slide_number"]
+        slide_obj = slides_by_pos.get(sn)
+        heuristics = inspect_slide_image_heuristics(item["image_bytes"])
+        heuristic_risk = (
+            not heuristics.get("has_adequate_contrast", True)
+            or heuristics.get("overflow_risk", "low") != "low"
+            or heuristics.get("balance_ratio", 1.0) < 0.6
+        )
+        if total <= 4 or heuristic_risk or not slide_obj:
+            selected.append(item)
+            continue
+        spec = (slide_obj.content or {}).get("spec") or {}
+        kind = spec.get("kind", "content")
+        blocks = spec.get("blocks") or []
+        block_types = {b.get("type") for b in blocks if isinstance(b, dict)}
+        is_complex = (
+            bool(spec.get("image"))
+            or bool(block_types & {"chart", "diagram", "stat_row", "table", "columns"})
+            or len(blocks) >= 2
+        )
+        if kind == "content" and is_complex:
+            selected.append(item)
+    return selected
 
 
 def run_render_and_critique_repair(presentation, topic: str, max_repairs: int = 2) -> list[str]:
-    """Render-and-critique loop: renders slides to PNGs, asks Gemini Vision, and re-specs failing slides."""
+    """Render-and-critique loop: renders slides to PNGs, critiques likely-problematic slides in parallel,
+    repairs failing slides (< 75) via respec_slide, and persists real critique scores on the presentation."""
     repairs_done = []
     try:
+        from flask import current_app
+        from sqlalchemy.orm.attributes import flag_modified
         from services.deck import pipeline
+
         images = render_presentation_slides_to_images(presentation)
-        repairs_attempted = 0
-        for item in images:
-            if repairs_attempted >= max_repairs:
-                break
+        if not images:
+            return repairs_done
+
+        targets = _select_slides_for_critique(presentation, images)
+        slides_by_pos = {s.position: s for s in presentation.slides}
+
+        app_obj = None
+        try:
+            app_obj = current_app._get_current_object()
+        except Exception:
+            pass
+
+        def _run_critique(item):
             sn = item["slide_number"]
-            critique = critique_slide_with_vision(item["image_bytes"], f"Slide {sn}", topic)
-            if not critique.get("passed") and critique.get("score", 100) < 60:
-                slide_obj = next((s for s in presentation.slides if s.position == sn), None)
-                if slide_obj:
-                    instruction = critique.get("fix_instruction") or "Improve visual hierarchy and layout balance."
-                    ok, _ = pipeline.respec_slide(presentation, slide_obj, instruction)
-                    if ok:
-                        repairs_done.append(f"Slide {sn} auto-repaired for visual balance.")
-                        repairs_attempted += 1
+            s_obj = slides_by_pos.get(sn)
+            title = s_obj.title if s_obj else f"Slide {sn}"
+            if app_obj:
+                with app_obj.app_context():
+                    crit = critique_slide_with_vision(item["image_bytes"], title, topic)
+            else:
+                crit = critique_slide_with_vision(item["image_bytes"], title, topic)
+            return sn, crit
+
+        critique_results: List[Dict[str, Any]] = []
+        if targets:
+            with ThreadPoolExecutor(max_workers=min(len(targets), CRITIQUE_MAX_WORKERS)) as pool:
+                futures = [pool.submit(_run_critique, item) for item in targets]
+                for f in as_completed(futures):
+                    sn, crit = f.result()
+                    critique_results.append({"slide_number": sn, **crit})
+
+        critique_results.sort(key=lambda c: c["slide_number"])
+
+        failing = [
+            c for c in critique_results
+            if c.get("status") == "ok" and (not c.get("passed") or (c.get("score") is not None and c["score"] < REPAIR_SCORE_THRESHOLD))
+        ]
+        # Repair lowest-scoring slides first
+        failing.sort(key=lambda c: c.get("score") if c.get("score") is not None else 0)
+
+        repaired_slides: List[int] = []
+        for item in failing[:max_repairs]:
+            sn = item["slide_number"]
+            slide_obj = slides_by_pos.get(sn)
+            if not slide_obj:
+                continue
+            instruction = item.get("fix_instruction") or "; ".join(item.get("problems") or []) or "Improve visual hierarchy and layout balance."
+            ok, errs = pipeline.respec_slide(presentation, slide_obj, instruction)
+            if ok:
+                item["repaired"] = True
+                repaired_slides.append(sn)
+                repairs_done.append(f"Slide {sn} auto-repaired for visual balance.")
+            else:
+                log.warning("Critique repair rejected by validator on slide %d: %s", sn, errs)
+
+        evaluated = [c for c in critique_results if c.get("status") == "ok" and c.get("score") is not None]
+        errored = [c for c in critique_results if c.get("status") == "error"]
+        avg_score = round(sum(c["score"] for c in evaluated) / len(evaluated), 1) if evaluated else None
+
+        settings = dict(presentation.settings or {})
+        settings["visual_critique"] = {
+            "average_score": avg_score,
+            "evaluated_slides": len(evaluated),
+            "passed_slides": sum(1 for c in evaluated if c.get("passed")),
+            "failed_evaluations": len(errored),
+            "repaired_slides": repaired_slides,
+            "slides": [
+                {
+                    "slide_number": c["slide_number"],
+                    "score": c["score"],
+                    "passed": c["passed"],
+                    "status": c["status"],
+                    "problems": c.get("problems", []),
+                    "repaired": bool(c.get("repaired", False)),
+                }
+                for c in critique_results
+            ],
+        }
+        presentation.settings = settings
+        flag_modified(presentation, "settings")
+        db.session.commit()
     except Exception as e:
         log.warning("Render and critique repair loop failed: %s", e)
     return repairs_done

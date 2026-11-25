@@ -7,7 +7,7 @@ from flask import current_app
 
 
 def _fernet() -> Fernet:
-    is_prod = current_app.config.get("ENV_IS_PRODUCTION") or current_app.config.get("IS_PROD", False)
+    is_prod = bool(current_app.config.get("IS_PROD", False))
     key = (current_app.config.get("TOKEN_ENCRYPTION_KEY") or "").strip()
     if key:
         try:

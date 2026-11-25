@@ -97,7 +97,7 @@ def test_google_callback_success_sets_cookie_and_redirects(app, monkeypatch):
         "refresh_token": "mock-refresh-token",
         "scopes": sorted(SCOPES),
     }
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: mock_info)
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: mock_info)
 
     with app.test_client() as c:
         start_res = c.post("/api/auth/google").get_json()["data"]
@@ -130,7 +130,7 @@ def test_google_callback_with_dynamic_return_to(app, monkeypatch):
         "refresh_token": "mock-refresh-token",
         "scopes": sorted(SCOPES),
     }
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: mock_info)
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: mock_info)
 
     with app.test_client() as c:
         start_res = c.post("/api/auth/google", json={"return_to": "https://slide-mind-ai-delta.vercel.app"}).get_json()["data"]
@@ -197,7 +197,7 @@ def test_google_callback_merges_existing_user_cleanly(app, monkeypatch):
         "refresh_token": "mock-refresh-token",
         "scopes": sorted(SCOPES),
     }
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: mock_info)
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: mock_info)
 
     with app.test_client() as c:
         start_res = c.post("/api/auth/google").get_json()["data"]
@@ -239,13 +239,80 @@ def test_exchange_code_falls_back_to_userinfo_when_id_token_fails(app, monkeypat
     class FakeFlow:
         oauth2session = FakeSession()
         credentials = FakeCreds()
-        def fetch_token(self, code):
+        def fetch_token(self, code, **kw):
             pass
 
-    monkeypatch.setattr(google_auth, "_flow", lambda state=None: FakeFlow())
+    monkeypatch.setattr(google_auth, "_flow", lambda state=None, code_verifier=None: FakeFlow())
 
     with app.app_context():
         info = google_auth.exchange_code("test_code")
         assert info["sub"] == "userinfo-sub-456"
         assert info["email"] == "userinfo@example.com"
         assert info["name"] == "UserInfo User"
+
+
+def test_pkce_code_verifier_round_trip(app, monkeypatch):
+    """PKCE code_verifier generated at login start must survive encrypted inside signed state and match callback fetch_token."""
+    import base64
+    import hashlib
+
+    captured = {}
+
+    class SpyFlow:
+        def __init__(self, verifier):
+            self.verifier = verifier
+            self.credentials = type("C", (), {"id_token": None, "refresh_token": "rt", "scopes": ["openid", "email"]})()
+            self.oauth2session = type(
+                "S",
+                (),
+                {
+                    "token": {"access_token": "at", "scope": "openid email"},
+                    "get": staticmethod(
+                        lambda url, timeout=None: type(
+                            "R",
+                            (),
+                            {
+                                "ok": True,
+                                "status_code": 200,
+                                "json": staticmethod(lambda: {
+                                    "sub": "pkce-sub",
+                                    "email": "pkce@example.com",
+                                    "email_verified": True,
+                                    "name": "PKCE User",
+                                }),
+                            },
+                        )()
+                    ),
+                },
+            )()
+
+        def fetch_token(self, **kwargs):
+            captured["fetch_kwargs"] = kwargs
+            captured["flow_verifier"] = self.verifier
+
+    with app.test_client() as c:
+        # 1. Start OAuth with real Flow.authorization_url (not mocked)
+        start_res = c.post("/api/auth/google").get_json()["data"]
+        auth_url = start_res["auth_url"]
+        state = start_res["state"]
+        qs = parse_qs(urlparse(auth_url).query)
+        assert "code_challenge" in qs
+        assert qs.get("code_challenge_method") == ["S256"]
+        challenge = qs["code_challenge"][0]
+
+        # Ensure code_verifier is encrypted (not readable in plaintext inside signed state)
+        raw_state_json = google_auth._state_serializer().loads(state)
+        assert "v" in raw_state_json
+        assert raw_state_json["v"].startswith("gAAAA")  # Fernet ciphertext prefix
+
+        # 2. On callback, intercept _flow to verify fetch_token gets exact matching verifier
+        monkeypatch.setattr(google_auth, "_flow", lambda state=None, code_verifier=None: SpyFlow(code_verifier))
+        res = c.get(f"/api/auth/google/callback?code=auth-code-123&state={state}")
+        assert res.status_code == 302
+        assert "token=" in res.headers["Location"]
+
+    sent_verifier = captured["fetch_kwargs"].get("code_verifier")
+    assert sent_verifier
+    assert sent_verifier == captured["flow_verifier"]
+    recomputed_challenge = base64.urlsafe_b64encode(hashlib.sha256(sent_verifier.encode()).digest()).decode().rstrip("=")
+    assert recomputed_challenge == challenge

@@ -42,8 +42,9 @@ def google_callback():
     if not code or not google_auth.verify_state(state):
         current_app.logger.warning("Google OAuth callback rejected: missing code or invalid state")
         return redirect(google_auth.frontend_redirect(return_to=return_to, error="invalid_state"))
+    code_verifier = google_auth.get_state_code_verifier(state)
     try:
-        info = google_auth.exchange_code(code)
+        info = google_auth.exchange_code(code, code_verifier=code_verifier)
     except GoogleNotConfigured:
         current_app.logger.warning("Google OAuth code exchange attempted while unconfigured")
         return redirect(google_auth.frontend_redirect(return_to=return_to, error="google_not_configured"))
@@ -89,7 +90,7 @@ def google_callback():
 
     token = issue_token(user.id)
     resp = redirect(google_auth.frontend_redirect(return_to=return_to, token=token, state=state))
-    is_prod = current_app.config.get("ENV_IS_PRODUCTION", False)
+    is_prod = bool(current_app.config.get("IS_PROD", False))
     resp.set_cookie(
         "sm_token",
         token,

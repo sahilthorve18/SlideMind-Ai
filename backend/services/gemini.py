@@ -211,6 +211,14 @@ def generate_reply(history: list[dict], sources=None, retrieval_failed: bool = F
     raise GeminiError("The AI service could not generate a reply.")
 
 
+def _guess_image_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
 def generate_json(prompt: str, system: str | None = None, temperature: float = 0.4, model: str | None = None,
                   images: list[bytes] | None = None) -> dict:
     """One-shot call that must return a JSON object. Raises GeminiError if it can't.
@@ -229,7 +237,7 @@ def generate_json(prompt: str, system: str | None = None, temperature: float = 0
     last_err = None
     contents = prompt
     if images:
-        parts = [types.Part.from_bytes(data=b, mime_type="image/jpeg") for b in images]
+        parts = [types.Part.from_bytes(data=b, mime_type=_guess_image_mime(b)) for b in images]
         contents = [*parts, prompt]
 
     for model in candidates:

@@ -244,3 +244,128 @@ def test_chat_tool_edit_existing_slide_updates_composed_spec(app, scripted):
             bullet_block = next((b for b in slide_3.content["spec"]["blocks"] if b["type"] == "bullets"), None)
             assert bullet_block is not None
             assert "Brand new verified bullet point A" in bullet_block["items"]
+
+
+def test_chat_tool_chart_and_diagram_edits_update_composed_spec(app, scripted, monkeypatch):
+    """Verify that generate_diagram and generate_chart update the slide's composed spec."""
+    with app.test_client() as c:
+        h = login(c)
+        pid = run_job(app, c, h)["result"]["presentation_id"]
+        with app.app_context():
+            from tools import draft
+            from agents.registry import ToolContext
+            p = db.session.get(Presentation, pid)
+            ctx = ToolContext(user_id=p.user_id)
+
+            # 1. Diagram edit updates composed spec blocks
+            monkeypatch.setattr(
+                gemini,
+                "generate_json",
+                lambda *a, **k: {
+                    "nodes": [{"id": "n1", "label": "Intake"}, {"id": "n2", "label": "Repair"}],
+                    "edges": [{"from": "n1", "to": "n2", "label": "assign"}],
+                },
+            )
+            diag_res = draft.generate_diagram(ctx, {"presentation_id": pid, "slide_number": 3, "description": "Intake to repair flow"})
+            assert diag_res["nodes"] == 2
+            s3 = next(s for s in p.slides if s.position == 3)
+            assert s3.content["layout"] == "diagram"
+            diag_block = next((b for b in s3.content["spec"]["blocks"] if b["type"] == "diagram"), None)
+            assert diag_block is not None
+            assert [n["label"] for n in diag_block["nodes"]] == ["Intake", "Repair"]
+
+            # 2. Chart edit updates composed spec blocks
+            chart_res = draft.generate_chart(
+                ctx,
+                {
+                    "presentation_id": pid,
+                    "slide_number": 3,
+                    "chart_type": "bar",
+                    "title": "Tickets by Role",
+                    "labels": ["Staff", "Tech", "Admin"],
+                    "values": [12, 8, 3],
+                    "source_ref": 1,
+                },
+            )
+            assert chart_res["points"] == 3
+            s3 = next(s for s in p.slides if s.position == 3)
+            assert s3.content["layout"] == "chart"
+            chart_block = next((b for b in s3.content["spec"]["blocks"] if b["type"] == "chart"), None)
+            assert chart_block is not None
+            assert chart_block["kind"] == "bar"
+            assert chart_block["series"][0]["values"] == [12, 8, 3]
+
+
+def test_critique_repair_parallel_scoring_and_validator_guard(app, scripted, monkeypatch):
+    """Render-and-critique repairs scores < 75, ignores errored checks in pass counts, saves scores, and refuses invented numbers."""
+    from services import visual_quality_checker, intelligence
+
+    with app.test_client() as c:
+        h = login(c)
+        pid = run_job(app, c, h)["result"]["presentation_id"]
+
+    with app.app_context():
+        p = db.session.get(Presentation, pid)
+        original_s3_title = next(s for s in p.slides if s.position == 3).title
+
+        def mock_critique(image_bytes, slide_title, topic):
+            if "path" in slide_title.lower():
+                return {"score": 88, "passed": True, "status": "ok", "problems": [], "fix_instruction": ""}
+            if "responsibilities" in slide_title.lower():
+                return {
+                    "score": 68,
+                    "passed": False,
+                    "status": "ok",
+                    "problems": ["Tight bottom spacing"],
+                    "fix_instruction": "Simplify card layout",
+                }
+            # Simulate transient error on remaining slides -> must NOT fake score=85/passed
+            return {"score": None, "passed": None, "status": "error", "problems": [], "fix_instruction": ""}
+
+        monkeypatch.setattr(visual_quality_checker, "critique_slide_with_vision", mock_critique)
+
+        # Case A: Repair attempt produces invented number -> validator rejects it and keeps slide unchanged
+        bad_spec = {
+            "slides": [{
+                "n": 3,
+                "kind": "content",
+                "title": "Three roles share 99.4% accuracy across labs",
+                "blocks": [{"type": "stat_row", "items": [{"value": "99.4%", "label": "Uptime"}, {"value": "10x", "label": "Speed"}]}],
+            }]
+        }
+        monkeypatch.setattr(gemini, "generate_json", lambda *a, **k: bad_spec)
+        repairs = visual_quality_checker.run_render_and_critique_repair(p, TOPIC, max_repairs=2)
+        assert repairs == []
+        s3 = next(s for s in p.slides if s.position == 3)
+        assert s3.title == original_s3_title  # unchanged!
+
+        vc = (p.settings or {}).get("visual_critique")
+        assert vc is not None
+        assert vc["evaluated_slides"] == 2
+        assert vc["passed_slides"] == 1
+        assert vc["failed_evaluations"] >= 1
+        assert vc["average_score"] == 78.0  # (88 + 68) / 2, excluding errors
+
+        # Intelligence report surfaces saved critique and unresolved < 75 warning
+        intel = intelligence.analyze_presentation(p)
+        assert intel["visual_critique"]["average_score"] == 78.0
+        assert any(iss.get("type") == "visual_critique" and iss.get("slide") == 3 for iss in intel["issues"])
+
+        # Case B: Valid repair within fact sheet succeeds and updates saved critique
+        good_spec = {
+            "slides": [{
+                "n": 3,
+                "kind": "content",
+                "title": "Three roles coordinate every lab repair step",
+                "kicker": "Roles",
+                "visual_plan": "cards",
+                "notes": "Three roles.",
+                "blocks": [{"type": "steps", "items": [{"title": "Staff reports", "body": "Opens a ticket."}, {"title": "Admin assigns", "body": "Picks a technician."}]}],
+            }]
+        }
+        monkeypatch.setattr(gemini, "generate_json", lambda *a, **k: good_spec)
+        repairs_ok = visual_quality_checker.run_render_and_critique_repair(p, TOPIC, max_repairs=2)
+        assert len(repairs_ok) == 1
+        s3_after = next(s for s in p.slides if s.position == 3)
+        assert s3_after.title == "Three roles coordinate every lab repair step"
+        assert p.settings["visual_critique"]["repaired_slides"] == [3]

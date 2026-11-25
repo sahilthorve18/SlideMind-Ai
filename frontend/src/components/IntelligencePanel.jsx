@@ -81,7 +81,7 @@ export default function IntelligencePanel({ presentationId, onSelectSlide, onRel
 
   if (!data) return null
 
-  const { overall_score, grade, summary, categories = {}, issues = [], recommendations = [], pacing_timeline = [] } = data
+  const { overall_score, grade, summary, categories = {}, issues = [], recommendations = [], pacing_timeline = [], visual_critique = null } = data
 
   const filteredIssues = issues.filter((iss) => {
     if (filter === 'all') return true
@@ -184,6 +184,55 @@ export default function IntelligencePanel({ presentationId, onSelectSlide, onRel
           })}
         </div>
       </div>
+
+      {/* Vision Render Audit */}
+      {visual_critique && visual_critique.evaluated_slides > 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Award size={16} className="text-brand-500" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                Vision Render Audit
+              </h3>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {visual_critique.average_score !== null && (
+                <span className="rounded-full bg-emerald-500/10 px-2.5 py-0.5 font-semibold text-emerald-600 dark:text-emerald-400">
+                  Avg {visual_critique.average_score}/100
+                </span>
+              )}
+              <span className="text-slate-500">
+                {visual_critique.passed_slides}/{visual_critique.evaluated_slides} slides passed
+              </span>
+              {visual_critique.repaired_slides?.length > 0 && (
+                <span className="rounded-full bg-brand-500/10 px-2 py-0.5 text-[11px] font-medium text-brand-600 dark:text-brand-400">
+                  Auto-repaired: {visual_critique.repaired_slides.map((n) => `S${n}`).join(', ')}
+                </span>
+              )}
+            </div>
+          </div>
+          {visual_critique.slides?.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {visual_critique.slides.map((s) => (
+                <button
+                  key={s.slide_number}
+                  onClick={() => onSelectSlide(s.slide_number - 1)}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium transition hover:border-brand-500 ${
+                    s.status === 'error' || s.status === 'skipped'
+                      ? 'border-slate-200 text-slate-500 dark:border-slate-700'
+                      : s.passed
+                      ? 'border-emerald-500/30 bg-emerald-50/40 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300'
+                      : 'border-amber-500/30 bg-amber-50/40 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300'
+                  }`}
+                >
+                  S{s.slide_number}: {s.score !== null ? `${s.score}/100` : s.status}
+                  {s.repaired ? ' (repaired)' : ''}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Pacing Timeline */}
       {pacing_timeline.length > 0 && (

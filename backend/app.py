@@ -17,15 +17,16 @@ limiter = Limiter(key_func=get_remote_address)
 def create_app(overrides: dict | None = None) -> Flask:
     app = Flask(__name__)
     app.config.from_object(Config)
-    app.config["DEV_LOGIN_ENABLED"] = os.getenv("FLASK_ENV") == "development"
-    app.config["ENV_IS_PRODUCTION"] = os.getenv("FLASK_ENV") == "production"
+    env_name = os.getenv("FLASK_ENV", os.getenv("ENV", app.config.get("ENV", "development"))).lower()
+    app.config["IS_PROD"] = env_name in ("production", "prod")
+    app.config["DEV_LOGIN_ENABLED"] = env_name == "development"
     app.config["RATELIMIT_STORAGE_URI"] = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
     if overrides:
         app.config.update(overrides)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    if app.config.get("ENV_IS_PRODUCTION"):
+    if app.config.get("IS_PROD"):
         secret = app.config.get("SECRET_KEY") or ""
         if secret in ("", "dev-only-change-me"):
             raise RuntimeError("SECRET_KEY must be set to a unique value in production.")
@@ -92,7 +93,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        if app.config.get("ENV_IS_PRODUCTION"):
+        if app.config.get("IS_PROD"):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 

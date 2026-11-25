@@ -560,6 +560,20 @@ def analyze_presentation(p: Presentation, target_duration: int | None = None, au
     if not recommendations:
         recommendations.append("Deck is well-balanced and ready for rehearsal or export.")
 
+    visual_critique = settings.get("visual_critique")
+    if isinstance(visual_critique, dict):
+        for sc in visual_critique.get("slides", []):
+            if sc.get("status") == "ok" and (sc.get("score") is not None and sc["score"] < 75) and not sc.get("repaired"):
+                probs = "; ".join(sc.get("problems") or []) or "Visual balance or legibility below threshold."
+                issues.append({
+                    "severity": "warning",
+                    "slide": sc.get("slide_number"),
+                    "dimension": "visual",
+                    "type": "visual_critique",
+                    "message": f"Slide {sc.get('slide_number')} scored {sc.get('score')}/100 in vision audit: {probs}",
+                    "suggestion": "Regenerate this slide or trim content to restore whitespace and contrast.",
+                })
+
     return {
         "presentation_id": p.id,
         "title": p.title,
@@ -630,6 +644,7 @@ def analyze_presentation(p: Presentation, target_duration: int | None = None, au
         "issues": issues,
         "recommendations": recommendations,
         "pacing_timeline": pacing_timeline,
+        "visual_critique": visual_critique,
     }
 
 

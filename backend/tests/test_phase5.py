@@ -85,7 +85,7 @@ def test_start_unconfigured_is_503():
 
 
 def test_callback_creates_user_encrypts_token_and_returns_only_our_token(app, monkeypatch):
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: info())
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info())
     with app.test_client() as c:
         state = google_auth.new_state() if False else c.post("/api/auth/google").get_json()["data"]["state"]
         r = c.get(f"/api/auth/google/callback?code=abc&state={state}")
@@ -105,7 +105,7 @@ def test_callback_creates_user_encrypts_token_and_returns_only_our_token(app, mo
     ("error=access_denied", "google_denied"), ("code=abc&state=forged", "invalid_state"), ("state=x", "invalid_state"),
 ])
 def test_callback_rejects_bad_requests(app, monkeypatch, query, expected):
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: info())
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info())
     with app.test_client() as c:
         assert fragment(c.get("/api/auth/google/callback?" + query)) == {"error": expected}
     with app.app_context():
@@ -115,10 +115,10 @@ def test_callback_rejects_bad_requests(app, monkeypatch, query, expected):
 def test_callback_rejects_unverified_email_and_failed_exchange(app, monkeypatch):
     with app.test_client() as c:
         state = c.post("/api/auth/google").get_json()["data"]["state"]
-        monkeypatch.setattr(google_auth, "exchange_code", lambda code: info(email_verified=False))
+        monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info(email_verified=False))
         assert fragment(c.get(f"/api/auth/google/callback?code=a&state={state}")) == {"error": "email_unverified"}
 
-        def boom(code):
+        def boom(code, **kw):
             raise google_auth.GoogleAuthError("x")
         monkeypatch.setattr(google_auth, "exchange_code", boom)
         frag = fragment(c.get(f"/api/auth/google/callback?code=a&state={state}"))
@@ -128,7 +128,7 @@ def test_callback_rejects_unverified_email_and_failed_exchange(app, monkeypatch)
 
 
 def test_missing_slides_scope_means_not_connected(app, monkeypatch):
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: info(scopes=IDENTITY_ONLY))
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info(scopes=IDENTITY_ONLY))
     with app.test_client() as c:
         state = c.post("/api/auth/google").get_json()["data"]["state"]
         frag = fragment(c.get(f"/api/auth/google/callback?code=a&state={state}"))
@@ -137,7 +137,7 @@ def test_missing_slides_scope_means_not_connected(app, monkeypatch):
 
 
 def test_existing_email_account_is_linked_not_duplicated(app, monkeypatch):
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: info())
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info())
     with app.test_client() as c:
         c.post("/api/auth/dev-login", json={"email": "sahil@example.com"})
         state = c.post("/api/auth/google").get_json()["data"]["state"]
@@ -149,7 +149,7 @@ def test_existing_email_account_is_linked_not_duplicated(app, monkeypatch):
 def test_disconnect_revokes_and_clears(app, monkeypatch):
     revoked = []
     monkeypatch.setattr(google_auth.requests, "post", lambda url, params=None, timeout=None: revoked.append(params))
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: info())
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info())
     with app.test_client() as c:
         state = c.post("/api/auth/google").get_json()["data"]["state"]
         h = {"Authorization": "Bearer " + fragment(c.get(f"/api/auth/google/callback?code=a&state={state}"))["token"]}
@@ -377,7 +377,7 @@ def test_export_endpoint(app, monkeypatch):
     monkeypatch.setattr(gemini, "generate_json", lambda *a, **k: OUTLINE)
     with app.test_client() as c:
         # sign in through the Google flow so the grant is real
-        monkeypatch.setattr(google_auth, "exchange_code", lambda code: info())
+        monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info())
         state = c.post("/api/auth/google").get_json()["data"]["state"]
         h = {"Authorization": "Bearer " + fragment(c.get(f"/api/auth/google/callback?code=a&state={state}"))["token"]}
         with app.app_context():
@@ -403,7 +403,7 @@ def test_export_endpoint(app, monkeypatch):
 def test_chat_marks_google_connected_on_tool_context(app, monkeypatch):
     seen = {}
     monkeypatch.setattr(conv_routes, "run_agent", lambda history, ctx, active=None, **kw: seen.update(g=ctx.google_connected) or "ok")
-    monkeypatch.setattr(google_auth, "exchange_code", lambda code: info())
+    monkeypatch.setattr(google_auth, "exchange_code", lambda code, **kw: info())
     with app.test_client() as c:
         state = c.post("/api/auth/google").get_json()["data"]["state"]
         h = {"Authorization": "Bearer " + fragment(c.get(f"/api/auth/google/callback?code=a&state={state}"))["token"]}

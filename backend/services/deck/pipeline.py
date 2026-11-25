@@ -455,7 +455,7 @@ def respec_slide(p: Presentation, slide: Slide, instructions: str) -> tuple[bool
     if not sp:
         return False, ["The model returned no slide."]
     sp.setdefault("kind", cur.get("kind", "content"))
-    errs = validators.validate_slide(sp, facts, p.title, " ".join(f["claim"] for f in facts)) if sp["kind"] == "content" else []
+    errs = validators.validate_slide(sp, facts, p.title, " ".join(f["claim"] for f in facts))
     if errs:
         return False, errs
     spec = {**cur, "kicker": str(sp.get("kicker", cur.get("kicker", "")))[:30], "blocks": normalize_blocks(sp.get("blocks")),

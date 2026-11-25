@@ -77,7 +77,7 @@ def is_configured() -> bool:
     return bool(client_id and client_secret and redirect_uri)
 
 
-def _flow(state=None):
+def _flow(state=None, code_verifier=None):
     from google_auth_oauthlib.flow import Flow
 
     if not is_configured():
@@ -88,9 +88,15 @@ def _flow(state=None):
     client_secret = _clean_str(c.get("GOOGLE_CLIENT_SECRET"))
     cfg = {"web": {"client_id": client_id, "client_secret": client_secret,
                    "auth_uri": AUTH_URI, "token_uri": TOKEN_URI, "redirect_uris": [redirect_uri]}}
-    # Confidential server-side client with PKCE enabled for defense-in-depth against code interception
-    return Flow.from_client_config(cfg, scopes=SCOPES, state=state, redirect_uri=redirect_uri,
-                                   autogenerate_code_verifier=True)
+    # PKCE verifier is generated per auth request, encrypted in signed state, and supplied on callback
+    return Flow.from_client_config(
+        cfg,
+        scopes=SCOPES,
+        state=state,
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=False,
+    )
 
 
 # ---- CSRF state: signed, short-lived; the browser also keeps a copy and checks it on return ----
@@ -100,7 +106,7 @@ def is_safe_return_url(url: str | None) -> bool:
     if not url:
         return False
     clean = _clean_str(url).rstrip("/")
-    is_prod = bool(current_app.config.get("ENV_IS_PRODUCTION"))
+    is_prod = bool(current_app.config.get("IS_PROD", False))
     if not is_prod and clean in ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"):
         return True
     cfg_frontend = _clean_str(current_app.config.get("FRONTEND_URL")).rstrip("/")
@@ -116,10 +122,13 @@ def _state_serializer():
     return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="slidemind-oauth-state")
 
 
-def new_state(return_to: str | None = None) -> str:
+def new_state(return_to: str | None = None, code_verifier: str | None = None) -> str:
     payload = {"n": secrets.token_urlsafe(16)}
     if return_to and is_safe_return_url(return_to):
         payload["r"] = _clean_str(return_to).rstrip("/")
+    if code_verifier:
+        # Encrypt verifier so passive observers of the redirect URL cannot recover it from signed state
+        payload["v"] = crypto.encrypt(code_verifier)
     return _state_serializer().dumps(payload)
 
 
@@ -143,9 +152,23 @@ def get_state_return_to(state: str) -> str | None:
     return None
 
 
+def get_state_code_verifier(state: str) -> str | None:
+    """Extracts and decrypts the PKCE code verifier embedded inside a verified OAuth state token."""
+    try:
+        data = _state_serializer().loads(state or "", max_age=STATE_MAX_AGE)
+        if isinstance(data, dict) and data.get("v"):
+            return crypto.decrypt(data["v"])
+    except Exception:
+        pass
+    return None
+
+
 def authorization_url(return_to: str | None = None) -> tuple[str, str]:
-    state = new_state(return_to=return_to)
-    url, _ = _flow().authorization_url(access_type="offline", prompt="consent", include_granted_scopes="true", state=state)
+    code_verifier = secrets.token_urlsafe(64)
+    state = new_state(return_to=return_to, code_verifier=code_verifier)
+    url, _ = _flow(code_verifier=code_verifier).authorization_url(
+        access_type="offline", prompt="consent", include_granted_scopes="true", state=state
+    )
     return url, state
 
 
@@ -158,18 +181,21 @@ def _mask_secret(val: str) -> str:
     return f"{val[:4]}...{val[-4:]} (len {len(val)})"
 
 
-def exchange_code(code: str) -> dict:
+def exchange_code(code: str, code_verifier: str | None = None) -> dict:
     """Server-side code exchange with dual verification: ID token verification with graceful
     fallback to the authoritative Google UserInfo API. Returns profile + refresh token + granted scopes."""
     from google.auth.transport import requests as g_requests
     from google.oauth2 import id_token
 
-    flow = _flow()
+    flow = _flow(code_verifier=code_verifier) if code_verifier else _flow()
     c = current_app.config
     client_id = _clean_str(c.get("GOOGLE_CLIENT_ID"))
     client_secret = _clean_str(c.get("GOOGLE_CLIENT_SECRET"))
     try:
-        flow.fetch_token(code=code)
+        if code_verifier:
+            flow.fetch_token(code=code, code_verifier=code_verifier)
+        else:
+            flow.fetch_token(code=code)
     except Exception as e:
         err_str = str(e)
         if "invalid_client" in err_str or "client secret" in err_str.lower():
