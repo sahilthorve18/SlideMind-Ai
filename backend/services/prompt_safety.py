@@ -69,6 +69,18 @@ def is_noncanonical_ip_host(host: str) -> bool:
         return True
 
 
+def is_disallowed_ip(ip_obj) -> bool:
+    """True when an IP (or its IPv4-mapped counterpart for ::ffff:x.x.x.x) is private, loopback, link-local, reserved, or unspecified."""
+    candidates = [ip_obj]
+    mapped = getattr(ip_obj, "ipv4_mapped", None)
+    if mapped is not None:
+        candidates.append(mapped)
+    return any(
+        c.is_private or c.is_loopback or c.is_link_local or c.is_reserved or c.is_multicast or c.is_unspecified
+        for c in candidates
+    )
+
+
 def is_safe_visual_url(url: str | None) -> bool:
     """Validate that a slide image URL is a public http(s) URL or local /api/assets/<id>/view path."""
     import ipaddress
@@ -88,7 +100,7 @@ def is_safe_visual_url(url: str | None) -> bool:
         return False
     try:
         ip = ipaddress.ip_address(host)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        if is_disallowed_ip(ip):
             return False
     except ValueError:
         pass  # domain name (further checked via DNS at fetch time)

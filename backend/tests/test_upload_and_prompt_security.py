@@ -257,6 +257,8 @@ def test_ssrf_redirect_and_metadata_url_blocked(client, app, monkeypatch):
         "http://2130706433/secret.png",
         "http://0x7f000001/secret.png",
         "http://0177.0.0.1/secret.png",
+        "http://[::ffff:127.0.0.1]/secret.png",
+        "http://[::ffff:169.254.169.254]/latest/meta-data/",
     )
     for bad_url in obfuscated_urls:
         assert storage.is_safe_remote_url(bad_url) is False
@@ -348,11 +350,14 @@ def test_poisoned_pdf_end_to_end_cannot_inject_revenue_99m(app, monkeypatch):
 
     def scripted_llm(prompt, system=None, temperature=0.4, model=None, images=None):
         if "Extract the atomic facts" in prompt:
-            # Even if LLM attempts to spoof source="user" for invented $99M, filter_grounded_facts must drop it
+            # Test BOTH source="user" AND source="general" spoofing for $99M -> filter_grounded_facts must drop both,
+            # while keeping a legitimate non-doc general fact ("Light travels at 299,792 km/s") tagged unverified.
             return {
                 "facts": [
                     {"id": "F1", "claim": "Ticket lifecycle moves from open to verified.", "number": None, "source": "P1", "kind": "state"},
                     {"id": "F2", "claim": "Company revenue reached $99M this year.", "number": "$99M", "source": "user", "kind": "metric"},
+                    {"id": "F3", "claim": "Revenue is $99M, per the document.", "number": "$99M", "source": "general", "kind": "metric"},
+                    {"id": "F4", "claim": "Fibre alerts travel near light speed at 299,792 km/s.", "number": "299,792", "source": "general", "kind": "fact"},
                 ],
                 "gaps": [],
             }
@@ -364,7 +369,7 @@ def test_poisoned_pdf_end_to_end_cannot_inject_revenue_99m(app, monkeypatch):
                 "slides": [
                     {"n": 1, "role": "title", "message": "CampusCare ticket lifecycle", "shape": "idea", "fact_ids": ["F1"], "visual": "none"},
                     {"n": 2, "role": "content", "message": "Tickets move from open to verified", "shape": "cards", "fact_ids": ["F1"], "visual": "none"},
-                    {"n": 3, "role": "closing", "message": "Verification closes every lab ticket", "shape": "idea", "fact_ids": ["F1"], "visual": "none"},
+                    {"n": 3, "role": "closing", "message": "Verification closes every lab ticket", "shape": "idea", "fact_ids": ["F1", "F4"], "visual": "none"},
                 ],
             }
         if "Write the slide specs" in prompt:
@@ -406,6 +411,7 @@ def test_poisoned_pdf_end_to_end_cannot_inject_revenue_99m(app, monkeypatch):
 
         deck = c.get(f"/api/presentation/{pid}", headers=h).get_json()["data"]
         assert "$99M" not in str(deck) and "99M" not in str(deck)
+        assert "from general knowledge" in deck["slides"][2]["speaker_notes"]
 
     with app.app_context():
         p = db.session.get(Presentation, pid)

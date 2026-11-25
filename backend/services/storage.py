@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from flask import current_app
 from PIL import Image
-from services.prompt_safety import is_noncanonical_ip_host
+from services.prompt_safety import is_disallowed_ip, is_noncanonical_ip_host
 
 log = logging.getLogger(__name__)
 
@@ -116,12 +116,12 @@ def is_safe_remote_url(url: str) -> bool:
         if lower_host in ("localhost", "127.0.0.1", "::1", "0.0.0.0", "metadata.google.internal") or is_noncanonical_ip_host(lower_host):
             return False
 
-        # Resolve IP addresses and verify they are strictly public
+        # Resolve IP addresses and verify they are strictly public (including ::ffff: mapped addresses)
         addr_info = socket.getaddrinfo(hostname, None)
         for _, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
+            ip_str = sockaddr[0].split("%", 1)[0]
             ip_obj = ipaddress.ip_address(ip_str)
-            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved or ip_obj.is_multicast:
+            if is_disallowed_ip(ip_obj):
                 log.warning("SSRF Security Block: Rejecting remote URL %s resolving to private/reserved IP %s", url, ip_str)
                 return False
         return True

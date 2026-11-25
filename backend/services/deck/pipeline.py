@@ -113,7 +113,13 @@ def gather_material(ctx, params, progress) -> tuple[list[dict], str]:
         f"results conclusions {topic}",
     ) if params.get("document_ids") else ()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    is_sqlite = False
+    try:
+        is_sqlite = (db.engine.dialect.name == "sqlite")
+    except Exception:
+        pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1 if is_sqlite else 5) as executor:
         web_future = executor.submit(_fetch_web)
         kb_futures = [executor.submit(_fetch_kb, q) for q in queries]
 
@@ -326,6 +332,7 @@ def persist(ctx, params, facts, story, specs, passages, warnings) -> Presentatio
             spec["kind"] = "title"
             spec["tagline"] = spec["tagline"] or story["tagline"]
         used = {}
+        has_unverified_general = False
         for fid in sp.get("fact_ids", []):
             f = next((x for x in facts if x["id"] == fid), None)
             if f:
@@ -334,12 +341,18 @@ def persist(ctx, params, facts, story, specs, passages, warnings) -> Presentatio
                     meta = {"source_type": "document", "filename": pass_by_id[f["source"]]["source"], "citation_ref": pass_by_id[f["source"]]["ref"]}
                 elif f["source"] == "W":
                     meta = {"source_type": "web"}
+                elif f.get("unverified"):
+                    meta = {"source_type": "general_unverified"}
+                    has_unverified_general = True
                 used[fid] = {"text": f["claim"], **meta}
         bl = plain_bullets(spec)
         title = str(sp.get("title") or "").strip()[:250]
         content = {"layout": "composed", "spec": spec, "fact_ids": sp.get("fact_ids", []), "sources": used,
                    "bullets": [{"text": t, "source_ids": list(used)[:2]} for t in bl], "tagline": spec["tagline"]}
-        db.session.add(Slide(presentation_id=p.id, position=n, title=title, content=content, speaker_notes=str(sp.get("notes") or "").strip()[:3000]))
+        notes_text = str(sp.get("notes") or "").strip()
+        if has_unverified_general:
+            notes_text = (notes_text + " (Note: includes figures from general knowledge, not verified in uploaded sources.)").strip()
+        db.session.add(Slide(presentation_id=p.id, position=n, title=title, content=content, speaker_notes=notes_text[:3000]))
     db.session.flush()
     db.session.refresh(p)
     _commit(p, "deck generated (fact-first pipeline)")

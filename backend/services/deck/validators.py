@@ -11,20 +11,31 @@ PLANNING_WORDS = ("slide goal", "purpose:", "this slide will", "this slide shows
 KNOWN_FILLER = ("10x", "99.4%", "0s friction", "slidemind next-gen", "design standard")
 AUTO_LABEL = re.compile(r"\b(Pillar|Phase|Stage|Step|Point|Item|Feature)\s+\d\b", re.I)
 NUM = re.compile(
-    r"(?<![\w.])(\d[\d,]*(?:\.\d+)?(?:\s*(?:percent|pct|thousand|million|billion|trillion)\b|[%xX+]|[kmbtKMBT](?![a-zA-Z0-9_]))?)(?![\w])",
+    r"(?<![\w.])(\d[\d,]*(?:\.\d+)?(?:\s*(?:percent|pct|thousand|million|billion|trillion)\b|[%xX+]|(?:bn|mn|mm|[kmbt])(?![a-zA-Z0-9_]))?)(?![\w])",
     re.I,
 )
 _NUM_MULT = {
     "k": 1e3, "thousand": 1e3,
-    "m": 1e6, "million": 1e6,
-    "b": 1e9, "billion": 1e9,
+    "m": 1e6, "mn": 1e6, "mm": 1e6, "million": 1e6,
+    "b": 1e9, "bn": 1e9, "billion": 1e9,
     "t": 1e12, "trillion": 1e12,
 }
+_DOC_ATTRIBUTION_RE = re.compile(
+    r"\b("
+    r"per the (?:document|report|pdf|file|paper|source|slides?|text)|"
+    r"according to (?:the )?(?:document|report|pdf|file|source|study|company)|"
+    r"from the (?:document|report|pdf|file|source)|"
+    r"revenue|arr|mrr|ebitda|profit margin|valuation|headcount|burn rate|"
+    r"our (?:company|team|product|customers|users)|this (?:company|quarter|fiscal year)"
+    r")\b",
+    re.I,
+)
+MAX_GENERAL_NUMERIC_FACTS = 2
 
 
 def _norm_num(s: str) -> str:
     raw = str(s).strip().lower().replace(",", "").rstrip(".")
-    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(percent|pct|thousand|million|billion|trillion|[%kmbtx+])?", raw)
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(percent|pct|thousand|million|billion|trillion|bn|mn|mm|[%kmbtx+])?", raw)
     if not m:
         return raw.rstrip("%+.")
     val_str, suf = m.group(1), (m.group(2) or "").strip()
@@ -59,36 +70,54 @@ def untraced_numbers(text: str, pool: set[str], allow_small: bool = True) -> lis
 
 def filter_grounded_facts(facts: list[dict], user_text: str, passages: list[dict], web: str) -> list[dict]:
     """Drop facts whose numbers (>12) contradict or spoof their attributed source ('user', exact 'P#' id, or 'W').
-    Expands suffixes/words by value (e.g., 2.5M == 2.5 million, $1.2k == $1,200, 30% == 30 percent) and keeps 'general' facts."""
+    - Expands suffixes/words by value (2.5M == 2.5 million, $10bn == $10B, $1.2k == $1,200, 30% == 30 percent).
+    - Ties passage citations strictly to the cited passage's own text (p_map[src]).
+    - When documents/web exist, drops numeric 'general' claims with document/proprietary phrasing, caps non-doc numeric
+      general facts at MAX_GENERAL_NUMERIC_FACTS (2), and marks them unverified=True."""
     p_map = {p.get("id"): p.get("text", "") for p in (passages or []) if isinstance(p, dict) and p.get("id")}
-    all_passages = " ".join(p_map.values())
+    per_passage_pools = {pid: {_norm_num(m) for m in NUM.findall(txt)} for pid, txt in p_map.items()}
+    all_passage_pool = set().union(*per_passage_pools.values()) if per_passage_pools else set()
     user_pool = {_norm_num(m) for m in NUM.findall(user_text or "")}
     web_pool = {_norm_num(m) for m in NUM.findall(web or "")}
-    passage_pool = {_norm_num(m) for m in NUM.findall(all_passages)}
+    combined_pool = user_pool | all_passage_pool | web_pool
+    has_material = bool(p_map or (web and web.strip()))
 
     kept = []
+    general_numeric_count = 0
     for f in facts:
         src = str(f.get("source") or "general").strip()
         text = f"{f.get('claim', '')} {f.get('number') or ''}"
         nums = untraced_numbers(text, set(), allow_small=True)
-        if nums and src != "general":
+        if nums:
             norm_nums = [_norm_num(x) for x in nums]
-            drop_reason = None
-            if src == "user":
-                if any(n not in user_pool for n in norm_nums):
-                    drop_reason = "not in user request"
-            elif src == "W":
-                if any(n not in web_pool for n in norm_nums):
-                    drop_reason = "not in web text"
-            elif src in p_map:
-                if any(n not in passage_pool for n in norm_nums):
-                    drop_reason = f"not in passage pool for {src}"
+            if src == "general":
+                if has_material:
+                    if _DOC_ATTRIBUTION_RE.search(text):
+                        log.warning("Dropped ungrounded fact (source=general, reason=document/proprietary wording): %s", f.get("claim", "")[:140])
+                        continue
+                    if any(n not in combined_pool for n in norm_nums):
+                        if general_numeric_count >= MAX_GENERAL_NUMERIC_FACTS:
+                            log.warning("Dropped ungrounded fact (source=general, reason=general numeric cap reached): %s", f.get("claim", "")[:140])
+                            continue
+                        general_numeric_count += 1
+                        f = {**f, "unverified": True}
             else:
-                if any(n not in (user_pool | passage_pool | web_pool) for n in norm_nums):
-                    drop_reason = f"unrecognized source '{src}'"
-            if drop_reason:
-                log.warning("Dropped ungrounded fact (source=%s, reason=%s): %s", src, drop_reason, f.get("claim", "")[:140])
-                continue
+                drop_reason = None
+                if src == "user":
+                    if any(n not in user_pool for n in norm_nums):
+                        drop_reason = "not in user request"
+                elif src == "W":
+                    if any(n not in web_pool for n in norm_nums):
+                        drop_reason = "not in web text"
+                elif src in per_passage_pools:
+                    if any(n not in per_passage_pools[src] for n in norm_nums):
+                        drop_reason = f"not in cited passage {src}"
+                else:
+                    if any(n not in combined_pool for n in norm_nums):
+                        drop_reason = f"unrecognized source '{src}'"
+                if drop_reason:
+                    log.warning("Dropped ungrounded fact (source=%s, reason=%s): %s", src, drop_reason, f.get("claim", "")[:140])
+                    continue
         kept.append(f)
     return kept
 
