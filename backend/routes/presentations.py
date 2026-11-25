@@ -201,7 +201,7 @@ def regenerate_slide(pid, pos):
 @require_auth
 def get_visual_candidates(pid, pos):
     """Find a Better Visual: generates visual brief and returns ranked image candidates."""
-    from services import visual_intelligence
+    from services.deck import image_search
 
     p = _own(pid)
     if not p:
@@ -210,31 +210,24 @@ def get_visual_candidates(pid, pos):
     if not target_slide:
         return fail("not_found", f"Slide {pos} not found.", 404)
 
-    content = target_slide.content or {}
-    bullets = [b.get("text", "") if isinstance(b, dict) else str(b) for b in content.get("bullets", [])]
-
-    brief = visual_intelligence.generate_visual_brief(
-        topic=p.title,
+    brief = image_search.VisualBrief(
         slide_title=target_slide.title or f"Slide {pos}",
-        purpose=content.get("purpose", ""),
-        bullets=bullets,
-        layout=content.get("layout", "split_screen"),
-        slide_index=pos - 1,
-        total_slides=len(p.slides),
+        main_message=target_slide.title or f"Slide {pos}",
+        key_concepts=(target_slide.title or p.title).split()[:6],
+        search_keywords=[target_slide.title, p.title],
     )
 
-    candidates = visual_intelligence.retrieve_image_candidates(
+    candidates = image_search.retrieve_image_candidates(
         brief,
         already_used_urls=set(),
         limit_per_provider=4,
         user_id=g.user.id,
     )
-    ranked = visual_intelligence.evaluate_and_rank_candidates(candidates, brief)
 
     return ok({
         "slide_position": pos,
-        "brief": visual_intelligence.asdict(brief),
-        "candidates": [c.to_dict() for c in ranked[:10]],
+        "brief": image_search.asdict(brief),
+        "candidates": [c.to_dict() for c in candidates[:10]],
     })
 
 
@@ -436,7 +429,10 @@ def create_presentation():
     if running:
         return fail("job_in_progress", "A presentation is already being generated. Wait for it to finish.", 409,
                     {"job_id": running.id})
-    job = jobs.start_generation(current_app._get_current_object(), g.user.id, params, doc_names)
+    try:
+        job = jobs.start_generation(current_app._get_current_object(), g.user.id, params, doc_names)
+    except jobs.JobCapacityExceeded as e:
+        return fail("engine_busy", str(e), 503)
     return ok(jobs.job_dict(job), 202)
 
 

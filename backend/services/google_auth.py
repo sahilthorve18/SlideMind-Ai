@@ -88,20 +88,20 @@ def _flow(state=None):
     client_secret = _clean_str(c.get("GOOGLE_CLIENT_SECRET"))
     cfg = {"web": {"client_id": client_id, "client_secret": client_secret,
                    "auth_uri": AUTH_URI, "token_uri": TOKEN_URI, "redirect_uris": [redirect_uri]}}
-    # Confidential server-side client: the client secret authenticates the exchange, so PKCE is not used.
+    # Confidential server-side client with PKCE enabled for defense-in-depth against code interception
     return Flow.from_client_config(cfg, scopes=SCOPES, state=state, redirect_uri=redirect_uri,
-                                   autogenerate_code_verifier=False)
+                                   autogenerate_code_verifier=True)
 
 
 # ---- CSRF state: signed, short-lived; the browser also keeps a copy and checks it on return ----
 
 def is_safe_return_url(url: str | None) -> bool:
-    """Validates if return_to belongs to known dev origins, Vercel preview/production, or configured FRONTEND_URL."""
+    """Validates if return_to belongs to known dev origins or configured FRONTEND_URL/FRONTEND_ORIGINS."""
     if not url:
         return False
-    import re
     clean = _clean_str(url).rstrip("/")
-    if clean in ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"):
+    is_prod = bool(current_app.config.get("ENV_IS_PRODUCTION"))
+    if not is_prod and clean in ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"):
         return True
     cfg_frontend = _clean_str(current_app.config.get("FRONTEND_URL")).rstrip("/")
     if cfg_frontend and clean == cfg_frontend:
@@ -109,8 +109,6 @@ def is_safe_return_url(url: str | None) -> bool:
     for origin in current_app.config.get("FRONTEND_ORIGINS", []):
         if clean == _clean_str(origin).rstrip("/"):
             return True
-    if re.match(r"^https:\/\/[\w\-]+(\.vercel\.app|\.onrender\.com)$", clean):
-        return True
     return False
 
 

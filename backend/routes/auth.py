@@ -169,9 +169,9 @@ def guest_login():
     """1-Click instant guest pass so anyone can try SlideMind AI immediately."""
     import uuid
 
-    guest_id = uuid.uuid4().hex[:6]
+    guest_id = uuid.uuid4().hex[:12]
     email = f"guest_{guest_id}@slidemind.ai"
-    user = User(email=email, name=f"Guest Explorer #{guest_id}")
+    user = User(email=email, name=f"Guest Explorer #{guest_id[:6]}")
     db.session.add(user)
     db.session.commit()
     return ok({"token": issue_token(user.id), "user": _user_dict(user)})

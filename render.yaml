@@ -22,7 +22,7 @@ services:
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
       - key: TOKEN_ENCRYPTION_KEY
-        generateValue: true
+        sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET

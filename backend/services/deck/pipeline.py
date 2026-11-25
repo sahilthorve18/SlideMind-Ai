@@ -211,13 +211,29 @@ def build_specs(params, facts, story, progress) -> tuple[dict, list[str]]:
     for i, s in enumerate(items, 1):
         s["n"] = i
     specs, warnings = {}, []
-    batch = 5
-    for start in range(0, len(items), batch):
-        chunk = items[start:start + batch]
-        data = _json(_spec_prompt(params, facts, story, chunk), SYS, 0.45, planner=True)
+    batch = 4
+    chunks = [items[start:start + batch] for start in range(0, len(items), batch)]
+    if len(chunks) == 1:
+        data = _json(_spec_prompt(params, facts, story, chunks[0]), SYS, 0.45, planner=True)
         for sp in (data.get("slides") or []):
             if isinstance(sp, dict) and isinstance(sp.get("n"), int):
                 specs[sp["n"]] = sp
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        def _fetch_spec_chunk(chunk):
+            try:
+                return _json(_spec_prompt(params, facts, story, chunk), SYS, 0.45, planner=True)
+            except Exception as e:
+                log.warning("Parallel spec generation chunk failed: %s", e)
+                return {"slides": []}
+
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as pool:
+            futures = [pool.submit(_fetch_spec_chunk, ch) for ch in chunks]
+            for f in as_completed(futures):
+                data = f.result()
+                for sp in (data.get("slides") or []):
+                    if isinstance(sp, dict) and isinstance(sp.get("n"), int):
+                        specs[sp["n"]] = sp
     user_text = params["topic"]
     source_text = " ".join(f["claim"] for f in facts)
     for attempt in (1, 2):
@@ -408,6 +424,16 @@ def generate_deck(ctx, params, progress) -> tuple[Presentation, list[str]]:
         log.warning("image step failed: %s", e)
         warnings.append("Photo selection failed; the deck was created without photos.")
     progress("visuals", "success")
+
+    # Render-and-critique loop: multimodal evaluation and automatic layout refinement
+    try:
+        from services import visual_quality_checker
+        repairs = visual_quality_checker.run_render_and_critique_repair(p, params["topic"], max_repairs=2)
+        if repairs:
+            warnings.extend(repairs)
+    except Exception as e:
+        log.warning("Render and critique repair skipped: %s", e)
+
     return p, warnings
 
 

@@ -7,7 +7,7 @@ from flask import current_app
 from agents.registry import ToolError, tool
 from database import db
 from models import Conversation, Presentation, PresentationVersion, Slide, User
-from services import design_intelligence, gemini
+from services import gemini
 
 THEMES = [
     # Studio Modern Design Systems (2026 Aesthetic)
@@ -569,8 +569,22 @@ def add_speaker_notes(ctx, a):
 )
 def auto_populate_visuals(ctx, a):
     p = get_presentation(ctx, a["presentation_id"])
-    from services import visual_intelligence
-    enriched = visual_intelligence.auto_populate_presentation_visuals(p, user_id=ctx.user_id, force_update=True)
+    from services.deck import visuals
+    from sqlalchemy.orm.attributes import flag_modified
+    used_urls = set()
+    enriched = 0
+    for s in p.slides:
+        c = dict(s.content or {})
+        sp = dict(c.get("spec") or {})
+        if sp and not sp.get("image"):
+            img = visuals.pick_image(s.title, sp.get("image_query", s.title), p.title, used_urls, ctx.user_id)
+            if img:
+                sp["image"] = img
+                c["spec"] = sp
+                s.content = c
+                flag_modified(s, "content")
+                used_urls.add(img["url"])
+                enriched += 1
     _commit(p, "auto populated visuals")
     return {"presentation_id": p.id, "enriched_slides": enriched, "status": "visuals_populated"}
 

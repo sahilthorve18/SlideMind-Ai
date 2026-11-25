@@ -24,6 +24,12 @@ KINDS = (KIND, KIND_EDIT)
 ACTIVE = ("queued", "running")
 STALE_SECONDS = 600
 JOB_MAX_STEPS = 25
+MAX_CONCURRENT_JOBS = 2
+
+
+class JobCapacityExceeded(Exception):
+    """Raised when active background generation jobs reach the host's concurrency capacity."""
+    pass
 
 # Rough progress by the stage a tool belongs to; progress never goes backwards.
 STAGES = {
@@ -99,6 +105,10 @@ def active_job_for(user_id: str, conversation_id: str | None = None) -> Backgrou
 
 
 def start_generation(app, user_id: str, params: dict, doc_names: list[str], conversation_id: str | None = None) -> BackgroundJob:
+    if not app.config.get("JOBS_INLINE", False) and not app.config.get("TESTING", False):
+        running = BackgroundJob.query.filter(BackgroundJob.status.in_(ACTIVE)).count()
+        if running >= MAX_CONCURRENT_JOBS:
+            raise JobCapacityExceeded("SlideMind is currently processing presentations at full capacity. Please try again in a moment.")
     payload = {"params": params, "doc_names": doc_names, "log": []}
     if conversation_id:
         payload["conversation_id"] = conversation_id
@@ -223,15 +233,6 @@ def _run(app, job_id: str):
             progress = lambda name, status: _record(job_id, name, status)  # noqa: E731
             p, deck_warnings = pipeline.generate_deck(ctx, params, progress)
             pid = p.id
-
-            # Ensure all slides are enriched with authentic visuals and consistent layouts
-            try:
-                from services import visual_intelligence
-                visual_intelligence.auto_populate_presentation_visuals(p, user_id=job.user_id, force_update=True)
-                db.session.commit()
-            except Exception as e:
-                log.warning("auto_populate_presentation_visuals in job: %s", e)
-
             reply = "Created '%s' with %d slides." % (p.title, len(p.slides))
             if deck_warnings:
                 reply += " Notes: " + " ".join(deck_warnings[:4])
@@ -335,11 +336,9 @@ def _run_edit(app, job_id: str, run_agent_fn=None):
                         p.updated_at = datetime.now(timezone.utc)
                         from services import design_auditor
                         design_auditor.auto_correct_presentation_design(p)
-                        from services import visual_intelligence
-                        visual_intelligence.auto_populate_presentation_visuals(p, user_id=job.user_id, force_update=True)
                         db.session.commit()
                 except Exception as e:
-                    log.warning("Auto visual population in chat edit job: %s", e)
+                    log.warning("Design auto-correction in chat edit job: %s", e)
 
             from agents.agent import used_citations
             citations = used_citations(reply, ctx.citations)

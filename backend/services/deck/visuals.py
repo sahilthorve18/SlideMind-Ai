@@ -45,7 +45,7 @@ def judge(image_jpeg: bytes, message: str, topic: str) -> dict:
 
 
 def pick_image(message: str, query: str, topic: str, used_urls: set, user_id: str | None) -> dict | None:
-    from services import visual_intelligence as vi
+    from services.deck import image_search as vi
 
     q = (query or message or topic).strip()
     if not q:

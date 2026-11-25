@@ -13,7 +13,7 @@ from app import create_app
 from database import db
 from models import Presentation, ToolExecutionLog, User
 from rag import embed
-from services import gemini
+from services import gemini, jobs
 from tests.test_phase3 import fake_embed, make_pdf, upload, login  # reuse helpers
 
 EXPECTED_TOOLS = {
@@ -46,7 +46,7 @@ def ctx(app):
 def fake_json(responses):
     """Monkeypatch helper: returns queued dicts from gemini.generate_json."""
     queue = list(responses)
-    return lambda prompt, system=None, temperature=0.4: queue.pop(0)
+    return lambda prompt, system=None, temperature=0.4, **kwargs: queue.pop(0) if queue else {}
 
 
 OUTLINE = {"title": "Solar Basics", "slides": [{"title": "Intro", "purpose": "hook"}, {"title": "Cost", "purpose": "prices"},
@@ -233,6 +233,7 @@ def test_system_prompt_lists_documents_and_active_draft(app, monkeypatch):
 # ---- chat endpoint integration ----
 
 def test_chat_endpoint_returns_tool_calls_and_active_presentation(app, monkeypatch):
+    monkeypatch.setattr(jobs, "start_generation", lambda *a, **kw: SimpleNamespace(id="job-test-123"))
     monkeypatch.setattr(gemini, "generate_json", fake_json([OUTLINE]))
     client = FakeClient([[("generate_slide_outline", {"topic": "solar", "slide_count": 3})], "Draft ready."])
     monkeypatch.setattr(gemini, "_client", lambda: client)

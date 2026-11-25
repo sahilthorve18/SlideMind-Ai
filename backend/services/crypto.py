@@ -7,13 +7,19 @@ from flask import current_app
 
 
 def _fernet() -> Fernet:
+    is_prod = current_app.config.get("ENV_IS_PRODUCTION") or current_app.config.get("IS_PROD", False)
     key = (current_app.config.get("TOKEN_ENCRYPTION_KEY") or "").strip()
     if key:
         try:
             return Fernet(key.encode())
-        except Exception:
+        except Exception as e:
+            if is_prod:
+                raise RuntimeError("CRITICAL SECURITY ERROR: TOKEN_ENCRYPTION_KEY must be a valid 32-byte urlsafe base64 Fernet key in production.") from e
             current_app.logger.warning("Invalid TOKEN_ENCRYPTION_KEY format, falling back to SECRET_KEY derivation.")
-    # Safe deterministic derivation from SECRET_KEY ensures encryption works reliably in all environments
+    elif is_prod:
+        raise RuntimeError("CRITICAL SECURITY ERROR: TOKEN_ENCRYPTION_KEY environment variable is required in production.")
+
+    # Safe deterministic derivation from SECRET_KEY ensures encryption works reliably in development and testing
     secret = (current_app.config.get("SECRET_KEY") or "slidemind-default-secret-key").strip()
     digest = hashlib.sha256(secret.encode()).digest()
     return Fernet(base64.urlsafe_b64encode(digest))

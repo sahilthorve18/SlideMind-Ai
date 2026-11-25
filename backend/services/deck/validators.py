@@ -5,7 +5,7 @@ from .blocks import block_text, normalize_blocks
 
 PLANNING_WORDS = ("slide goal", "purpose:", "this slide will", "this slide shows", "talking point", "placeholder", "lorem", "tbd", "todo",
                   "insert ", "your text here", "example text", "[")
-KNOWN_FILLER = ("10x", "99.4%", "0s friction", "slidemind next-gen", "design standard", "acceleration", "precision")
+KNOWN_FILLER = ("10x", "99.4%", "0s friction", "slidemind next-gen", "design standard")
 AUTO_LABEL = re.compile(r"\b(Pillar|Phase|Stage|Step|Point|Item|Feature)\s+\d\b", re.I)
 NUM = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?%?)(?![\w])")
 

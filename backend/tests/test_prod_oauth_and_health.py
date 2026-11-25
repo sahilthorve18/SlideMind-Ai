@@ -26,7 +26,7 @@ def app():
         "GOOGLE_CLIENT_SECRET": "test-client-secret",
         "GOOGLE_REDIRECT_URI": "https://slidemind-ai-backend.onrender.com/api/auth/google/callback",
         "FRONTEND_URL": "https://slidemind-ai.vercel.app",
-        "FRONTEND_ORIGINS": ["https://slidemind-ai.vercel.app", "http://localhost:5173"],
+        "FRONTEND_ORIGINS": ["https://slidemind-ai.vercel.app", "https://slide-mind-ai-delta.vercel.app", "http://localhost:5173"],
         "TOKEN_ENCRYPTION_KEY": KEY,
     }
     a = create_app(cfg)

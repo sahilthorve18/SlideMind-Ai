@@ -240,7 +240,10 @@ def chat():
             "publish": False,
             "document_ids": [d.id for d in docs]
         }
-        job = jobs.start_generation(current_app._get_current_object(), g.user.id, params, doc_names, conversation_id=c.id)
+        try:
+            job = jobs.start_generation(current_app._get_current_object(), g.user.id, params, doc_names, conversation_id=c.id)
+        except jobs.JobCapacityExceeded as e:
+            return fail("engine_busy", str(e), 503)
         reply = f"Generating a {slide_count}-slide presentation on **{topic}**..."
         return ok({
             "conversation_id": c.id,
@@ -332,11 +335,9 @@ def chat():
                 p.updated_at = datetime.now(timezone.utc)
                 from services import design_auditor
                 design_auditor.auto_correct_presentation_design(p)
-                from services import visual_intelligence
-                visual_intelligence.auto_populate_presentation_visuals(p, user_id=g.user.id, force_update=True)
                 db.session.commit()
         except Exception as e:
-            current_app.logger.warning("Auto visual population in chat: %s", e)
+            current_app.logger.warning("Auto design audit in chat: %s", e)
 
     citations = used_citations(reply, ctx.citations)
     msg = Message(

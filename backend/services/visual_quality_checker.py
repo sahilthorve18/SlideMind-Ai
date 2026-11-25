@@ -87,6 +87,60 @@ def inspect_slide_image_heuristics(img_bytes: bytes) -> Dict[str, Any]:
         return {"has_adequate_contrast": True, "overflow_risk": "low", "balance_ratio": 0.9}
 
 
+def critique_slide_with_vision(image_bytes: bytes, slide_title: str, topic: str) -> dict:
+    """Uses Gemini Vision to evaluate a rendered slide PNG for layout defects, overflow, and readability."""
+    from flask import current_app
+    if not current_app or not current_app.config.get("GEMINI_API_KEY"):
+        return {"score": 85, "passed": True, "problems": [], "fix_instruction": ""}
+
+    prompt = (
+        f"You are a master presentation art director evaluating a rendered slide.\n"
+        f"Deck Topic: {topic}\nSlide Title: {slide_title}\n"
+        "Inspect the rendered slide image for:\n"
+        "1. Text overflow or clipping at margins\n"
+        "2. Awkward whitespace balance or empty voids\n"
+        "3. Low contrast or unreadable text\n"
+        "4. Layout elegance and visual hierarchy\n"
+        'Return JSON: {"score": int (0-100), "passed": bool, "problems": [str], "fix_instruction": str}'
+    )
+    try:
+        res = gemini.generate_json(prompt, temperature=0.2, images=[image_bytes])
+        return {
+            "score": int(res.get("score", 85)),
+            "passed": bool(res.get("passed", True)),
+            "problems": list(res.get("problems", [])),
+            "fix_instruction": str(res.get("fix_instruction", "")),
+        }
+    except Exception as e:
+        log.warning("Vision critique unavailable: %s", e)
+        return {"score": 85, "passed": True, "problems": [], "fix_instruction": ""}
+
+
+def run_render_and_critique_repair(presentation, topic: str, max_repairs: int = 2) -> list[str]:
+    """Render-and-critique loop: renders slides to PNGs, asks Gemini Vision, and re-specs failing slides."""
+    repairs_done = []
+    try:
+        from services.deck import pipeline
+        images = render_presentation_slides_to_images(presentation)
+        repairs_attempted = 0
+        for item in images:
+            if repairs_attempted >= max_repairs:
+                break
+            sn = item["slide_number"]
+            critique = critique_slide_with_vision(item["image_bytes"], f"Slide {sn}", topic)
+            if not critique.get("passed") and critique.get("score", 100) < 60:
+                slide_obj = next((s for s in presentation.slides if s.position == sn), None)
+                if slide_obj:
+                    instruction = critique.get("fix_instruction") or "Improve visual hierarchy and layout balance."
+                    ok, _ = pipeline.respec_slide(presentation, slide_obj, instruction)
+                    if ok:
+                        repairs_done.append(f"Slide {sn} auto-repaired for visual balance.")
+                        repairs_attempted += 1
+    except Exception as e:
+        log.warning("Render and critique repair loop failed: %s", e)
+    return repairs_done
+
+
 def inspect_presentation_visually(presentation) -> Dict[str, Any]:
     """
     Comprehensive visual inspection of every generated slide:

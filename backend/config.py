@@ -33,7 +33,7 @@ class Config:
         **({"connect_args": {"timeout": 60}} if _is_sqlite else {"pool_recycle": 280})
     }
     FRONTEND_ORIGINS = [
-        o.strip() for o in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173").split(",") if o.strip()
+        o.strip() for o in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173,https://slide-mind-ai-delta.vercel.app").split(",") if o.strip()
     ]
     MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "15"))
     MAX_CONTENT_LENGTH = MAX_UPLOAD_MB * 1024 * 1024
@@ -41,7 +41,7 @@ class Config:
     GUEST_RATE_LIMIT = os.getenv("GUEST_RATE_LIMIT", "5 per hour")
     RATELIMIT_STORAGE_URI = os.getenv("REDIS_URL", os.getenv("RATELIMIT_STORAGE_URI", "memory://"))
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     PLANNER_MODEL = os.getenv("PLANNER_MODEL", "")  # stronger model for storyline + slide specs (falls back to GEMINI_MODEL)
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
     CHAT_HISTORY_LIMIT = int(os.getenv("CHAT_HISTORY_LIMIT", "20"))
