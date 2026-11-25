@@ -408,3 +408,85 @@ def test_filter_grounded_facts_expands_suffixes_and_keeps_general():
         ]}],
     }
     assert validators.validate_slide(slide, passage_facts, "Platform growth") == []
+
+
+def test_google_slides_renders_full_composed_scenes_including_diagrams_charts_and_sync(app, scripted, monkeypatch):
+    """Publishing and syncing composed decks must use positioned scene primitives (diagrams, charts, cards, images), not plain bullet placeholders."""
+    from services import google_auth, slides
+    from services.deck import render_gslides
+    from agents.registry import ToolContext
+    from models import User
+    from tests.test_phase5 import FakeDrive, FakeSlidesAPI, KEY
+    from types import SimpleNamespace
+
+    # 1. Direct primitive verification (rect, ellipse, line, text, image, bar/line/pie charts)
+    test_scene = {
+        "bg": "0f172a",
+        "items": [
+            {"k": "rect", "x": 1.0, "y": 1.0, "w": 4.0, "h": 2.0, "fill": "1e293b", "line": "38bdf8", "lw": 2.0, "r": 0.1, "alpha": 0.9},
+            {"k": "ellipse", "x": 6.0, "y": 1.0, "w": 1.0, "h": 1.0, "fill": "38bdf8"},
+            {"k": "line", "x1": 1.0, "y1": 3.5, "x2": 5.0, "y2": 3.5, "color": "f59e0b", "lw": 2.0, "dash": True, "arrow": True},
+            {"k": "text", "x": 1.2, "y": 1.2, "w": 3.6, "h": 0.8, "text": "Hello Scene", "size": 24, "color": "ffffff", "bold": True, "align": "c", "valign": "m", "font": "Calibri"},
+            {"k": "image", "x": 8.0, "y": 1.0, "w": 4.0, "h": 3.0, "src": {"url": "https://upload.wikimedia.org/solar.jpg"}},
+            {"k": "image", "x": 8.0, "y": 4.2, "w": 2.0, "h": 1.5, "src": {"url": "/api/assets/a1/view?token=abc"}},
+            {"k": "chart", "x": 1.0, "y": 4.0, "w": 6.0, "h": 2.8, "kind": "bar", "labels": ["Q1", "Q2"], "series": [{"name": "S", "values": [10, 25]}], "colors": ["38bdf8"], "fg": "ffffff", "grid": "334155"},
+        ],
+    }
+    reqs, ids, nr = render_gslides.deck_requests([test_scene], backend_url="https://api.example.com")
+    assert len(ids) == 1
+    assert nr == []
+    assert any(r.get("createSlide", {}).get("slideLayoutReference", {}).get("predefinedLayout") == "BLANK" for r in reqs)
+    created_imgs = [r["createImage"]["url"] for r in reqs if "createImage" in r]
+    assert "https://upload.wikimedia.org/solar.jpg" in created_imgs
+    assert "https://api.example.com/api/assets/a1/view?token=abc" in created_imgs
+    assert any("createLine" in r for r in reqs)
+    assert any(r.get("insertText", {}).get("text") == "Hello Scene" for r in reqs)
+    assert any(r.get("insertText", {}).get("text") == "25" for r in reqs)  # bar value label rendered
+
+    # Line & Pie charts also render without errors
+    line_pie = [
+        {"bg": "ffffff", "items": [{"k": "chart", "x": 1, "y": 1, "w": 5, "h": 3, "kind": "line", "labels": ["A", "B"], "series": [{"name": "S", "values": [5, 15]}], "colors": ["2563eb"], "fg": "0f172a", "grid": "cbd5e1"}]},
+        {"bg": "ffffff", "items": [{"k": "chart", "x": 1, "y": 1, "w": 5, "h": 3, "kind": "pie", "labels": ["X", "Y"], "series": [{"name": "S", "values": [40, 60]}], "colors": ["2563eb", "10b981"], "fg": "0f172a", "grid": "cbd5e1"}]},
+    ]
+    lp_reqs, _, _ = render_gslides.deck_requests(line_pie)
+    assert any(r.get("insertText", {}).get("text") == "60 (60%)" for r in lp_reqs)
+
+    # 2. End-to-end composed deck publish + sync uses BLANK scene layout & renders diagrams with zero not_rendered items
+    api = FakeSlidesAPI()
+    monkeypatch.setattr(slides, "build_services", lambda creds: slides.Services(api, FakeDrive()))
+    monkeypatch.setattr(google_auth, "credentials_for", lambda u: SimpleNamespace())
+    monkeypatch.setattr(google_auth, "is_connected", lambda u: True)
+
+    with app.test_client() as c:
+        h = login(c)
+        pid = run_job(app, c, h)["result"]["presentation_id"]
+
+        with app.app_context():
+            p = db.session.get(Presentation, pid)
+            u = db.session.get(User, p.user_id)
+            u.google_refresh_token_enc = "enc"
+            u.google_scopes = " ".join(google_auth.SCOPES)
+            db.session.commit()
+
+            from agents import registry
+            ctx = ToolContext(user_id=u.id, google_connected=True)
+            res = registry.execute("create_google_slides", {"presentation_id": pid}, ctx)
+            assert res["ok"] is True
+            assert "not_rendered" not in res
+            assert res["notes_written"] == 4
+
+            # Inspect batchUpdate requests sent to FakeSlidesAPI: diagrams -> createLine with arrows, not TITLE_AND_BODY
+            batch_reqs = api.log[1][1]
+            assert any(r.get("createLine") for r in batch_reqs)
+            assert not any(r.get("createSlide", {}).get("slideLayoutReference", {}).get("predefinedLayout") == "TITLE_AND_BODY" for r in batch_reqs)
+
+        # Sync after edit also emits scene primitives
+        sync_r = c.post(
+            "/api/presentation/edit",
+            headers=h,
+            json={"presentation_id": pid, "action": "edit_slide", "slide_position": 3, "title": "Updated Scene Sync Title", "sync": True},
+        )
+        assert sync_r.status_code == 200
+        assert sync_r.get_json()["data"]["google_sync"]["synced"] is True
+        last_sync_batch = next(entry[1] for entry in reversed(api.log) if entry[0] == "batch" and any("createSlide" in r for r in entry[1]))
+        assert any(r.get("insertText", {}).get("text") == "Updated Scene Sync Title" for r in last_sync_batch)

@@ -319,75 +319,75 @@ def presentation_url(pid: str) -> str:
     return f"https://docs.google.com/presentation/d/{pid}/edit"
 
 
-def publish_draft(svc: Services, draft: dict) -> dict:
-    """Create a Google Slides file from a draft.
-    draft: {title, theme, slides: [{title, bullets, layout, notes, sources}]}
-    Returns {presentation_id, url, slide_object_ids, not_rendered}."""
-    created = _execute(svc.slides.presentations().create(body={"title": (draft["title"] or "Untitled")[:200]}))
-    pid = created["presentationId"]
-    default_ids = [s["objectId"] for s in created.get("slides", [])]
+def _configured_backend_url() -> str:
+    try:
+        from flask import current_app
+        if current_app:
+            return str(current_app.config.get("BACKEND_URL") or "")
+    except Exception:
+        pass
+    return ""
 
+
+def _build_deck_requests(draft: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    scenes = draft.get("scenes")
+    if scenes:
+        from services.deck.render_gslides import deck_requests
+        return deck_requests(scenes, backend_url=_configured_backend_url())
     reqs, ids, not_rendered = [], [], []
-    for i, slide in enumerate(draft["slides"]):
+    for i, slide in enumerate(draft.get("slides") or []):
         r, oid, nr = slide_requests(i, slide, draft.get("theme", "modern_light"))
         reqs += r
         ids.append(oid)
         not_rendered += nr
+    return reqs, ids, not_rendered
+
+
+def _write_speaker_notes(svc: Services, pid: str, slides_data: list[dict], slide_ids: list[dict]) -> int:
+    notes_by_slide = {slide_ids[i]["slide"]: notes_text(s) for i, s in enumerate(slides_data) if notes_text(s)}
+    if not notes_by_slide:
+        return 0
+    got = _execute(svc.slides.presentations().get(
+        presentationId=pid,
+        fields="slides(objectId,slideProperties/notesPage/notesProperties/speakerNotesObjectId)"))
+    note_reqs = []
+    for s in got.get("slides", []):
+        nid = (((s.get("slideProperties") or {}).get("notesPage") or {}).get("notesProperties") or {}).get("speakerNotesObjectId")
+        if nid and s["objectId"] in notes_by_slide:
+            note_reqs.append({"insertText": {"objectId": nid, "text": notes_by_slide[s["objectId"]], "insertionIndex": 0}})
+    if note_reqs:
+        _execute(svc.slides.presentations().batchUpdate(presentationId=pid, body={"requests": note_reqs}))
+    return len(note_reqs)
+
+
+def publish_draft(svc: Services, draft: dict) -> dict:
+    """Create a Google Slides file from a draft (using composed scenes when available, else legacy slide_requests).
+    Returns {presentation_id, url, slide_object_ids, not_rendered, notes_written}."""
+    created = _execute(svc.slides.presentations().create(body={"title": (draft["title"] or "Untitled")[:200]}))
+    pid = created["presentationId"]
+    default_ids = [s["objectId"] for s in created.get("slides", [])]
+
+    reqs, ids, not_rendered = _build_deck_requests(draft)
     reqs += [{"deleteObject": {"objectId": d}} for d in default_ids]  # drop the blank starter slide last
     _execute(svc.slides.presentations().batchUpdate(presentationId=pid, body={"requests": reqs}))
 
-    # Speaker notes live on a separate notes page whose object id is only known after creation.
-    notes_by_slide = {ids[i]["slide"]: notes_text(s) for i, s in enumerate(draft["slides"]) if notes_text(s)}
-    if notes_by_slide:
-        got = _execute(svc.slides.presentations().get(
-            presentationId=pid,
-            fields="slides(objectId,slideProperties/notesPage/notesProperties/speakerNotesObjectId)"))
-        note_reqs = []
-        for s in got.get("slides", []):
-            nid = (((s.get("slideProperties") or {}).get("notesPage") or {}).get("notesProperties") or {}).get("speakerNotesObjectId")
-            if nid and s["objectId"] in notes_by_slide:
-                note_reqs.append({"insertText": {"objectId": nid, "text": notes_by_slide[s["objectId"]], "insertionIndex": 0}})
-        if note_reqs:
-            _execute(svc.slides.presentations().batchUpdate(presentationId=pid, body={"requests": note_reqs}))
-        notes_written = len(note_reqs)
-    else:
-        notes_written = 0
+    notes_written = _write_speaker_notes(svc, pid, draft.get("slides") or [], ids)
     return {"presentation_id": pid, "url": presentation_url(pid), "slide_object_ids": [o["slide"] for o in ids],
             "not_rendered": not_rendered, "notes_written": notes_written}
 
 
 def sync_presentation(svc: Services, pid: str, draft: dict) -> dict:
     """Sync an existing Google Slides file with the updated draft.
-    Inserts updated slides, deletes old slides, and rewrites speaker notes."""
+    Inserts updated slides from scenes, deletes old slides, and rewrites speaker notes."""
     existing = _execute(svc.slides.presentations().get(presentationId=pid, fields="slides(objectId)"))
     old_ids = [s["objectId"] for s in existing.get("slides", [])]
 
-    reqs, ids, not_rendered = [], [], []
-    for i, slide in enumerate(draft["slides"]):
-        r, oid, nr = slide_requests(i, slide, draft.get("theme", "modern_light"))
-        reqs += r
-        ids.append(oid)
-        not_rendered += nr
+    reqs, ids, not_rendered = _build_deck_requests(draft)
     if old_ids:
         reqs += [{"deleteObject": {"objectId": oid}} for oid in old_ids]
-
     _execute(svc.slides.presentations().batchUpdate(presentationId=pid, body={"requests": reqs}))
 
-    notes_by_slide = {ids[i]["slide"]: notes_text(s) for i, s in enumerate(draft["slides"]) if notes_text(s)}
-    notes_written = 0
-    if notes_by_slide:
-        got = _execute(svc.slides.presentations().get(
-            presentationId=pid,
-            fields="slides(objectId,slideProperties/notesPage/notesProperties/speakerNotesObjectId)"))
-        note_reqs = []
-        for s in got.get("slides", []):
-            nid = (((s.get("slideProperties") or {}).get("notesPage") or {}).get("notesProperties") or {}).get("speakerNotesObjectId")
-            if nid and s["objectId"] in notes_by_slide:
-                note_reqs.append({"insertText": {"objectId": nid, "text": notes_by_slide[s["objectId"]], "insertionIndex": 0}})
-        if note_reqs:
-            _execute(svc.slides.presentations().batchUpdate(presentationId=pid, body={"requests": note_reqs}))
-        notes_written = len(note_reqs)
-
+    notes_written = _write_speaker_notes(svc, pid, draft.get("slides") or [], ids)
     return {
         "presentation_id": pid,
         "url": presentation_url(pid),

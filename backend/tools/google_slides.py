@@ -8,6 +8,8 @@ from tools.draft import get_presentation
 
 
 def to_draft(p) -> dict:
+    from services.deck.adapter import build_scenes
+
     out = []
     for s in sorted(p.slides, key=lambda s: s.position):
         c = s.content or {}
@@ -19,13 +21,17 @@ def to_draft(p) -> dict:
                 srcs.setdefault(key, meta)
         out.append({"title": s.title, "bullets": [b["text"] for b in c.get("bullets", [])], "layout": c.get("layout"),
                     "notes": s.speaker_notes, "sources": list(srcs.values())})
-    return {"title": p.title, "theme": (p.settings or {}).get("theme", "modern_light"), "slides": out}
+    return {
+        "title": p.title,
+        "theme": (p.settings or {}).get("theme", "modern_light"),
+        "slides": out,
+        "scenes": build_scenes(p),
+    }
 
 
 @tool("create_google_slides",
-      "Publish the draft presentation to the user's Google Drive as an editable Google Slides file and return its real link. "
-      "Requires a connected Google account. Charts/diagrams/tables are not rendered yet: the result lists what was left out; "
-      "tell the user. If it fails, say so plainly; the draft is still saved.",
+      "Publish the draft presentation to the user's Google Drive as a richly formatted Google Slides file (matching the preview's "
+      "cards, diagrams, charts, typography, and visuals) and return its real link. Requires a connected Google account.",
       {"presentation_id": {"type": "string"}}, ["presentation_id"], requires_google=True)
 def create_google_slides(ctx, a):
     p = get_presentation(ctx, a["presentation_id"])
